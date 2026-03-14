@@ -50,25 +50,26 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
           </div>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="engine-label">Symbol</label>
-          <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="w-full engine-input">
-            {Object.entries(SYMBOLS).map(([key, name]) => (
-              <option key={key} value={key}>{name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="engine-label">Direction</label>
-          <select value={direction} onChange={(e) => setDirection(e.target.value as "" | "BUY" | "SELL")} className="w-full engine-input">
-            <option value="">Auto (Latest Signal)</option>
-            <option value="BUY">BUY (CALL)</option>
-            <option value="SELL">SELL (PUT)</option>
-          </select>
-          <p className="text-[8px] text-engine-text-dim font-mono">
-            Auto = follows the latest signal direction for this symbol
-          </p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label className="engine-label">Symbol</label>
+            <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="w-full engine-input">
+              {Object.entries(SYMBOLS).map(([key, name]) => (
+                <option key={key} value={key}>{name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="engine-label">Direction</label>
+            <select value={direction} onChange={(e) => setDirection(e.target.value as "" | "BUY" | "SELL")} className="w-full engine-input">
+              <option value="">Auto (Latest Signal)</option>
+              <option value="BUY">BUY (CALL)</option>
+              <option value="SELL">SELL (PUT)</option>
+            </select>
+            <p className="text-[8px] text-engine-text-dim font-mono">
+              Auto = follows the latest signal direction
+            </p>
+          </div>
         </div>
 
         <button

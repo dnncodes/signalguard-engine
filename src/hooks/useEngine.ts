@@ -392,6 +392,9 @@ export function useBacktest() {
         const currentTradeAmount = tradeAmount;
         const payout = currentTradeAmount * 0.85;
 
+        // Track the level at which this trade was placed BEFORE outcome
+        const tradePlacedAtLevel = martingaleLevel;
+
         if (isWin) {
           balance += payout;
           totalWins++;
@@ -409,12 +412,11 @@ export function useBacktest() {
           stats.losses++;
           stats.grossLoss += currentTradeAmount;
           martingaleLevel++;
-          if (martingaleLevel < config.maxMartingaleLevel) {
-            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
-          } else {
+          if (martingaleLevel >= config.maxMartingaleLevel) {
+            // CRITICAL: Stop trading when max consecutive losses reached
             stopReason = "martingale";
-            tradeAmount = config.initialTradeAmount;
-            martingaleLevel = 0;
+          } else {
+            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
           }
         }
 
@@ -433,10 +435,13 @@ export function useBacktest() {
           newBalance: balance,
           score: best.score,
           confidence: best.confidence,
-          martingaleLevel,
+          martingaleLevel: tradePlacedAtLevel,
           pattern: best.pattern,
           competingSymbols: candidates.length,
         });
+
+        // Stop loop if martingale max consecutive losses reached
+        if (stopReason === "martingale") break;
       }
 
       // Build per-symbol results
@@ -637,13 +642,16 @@ export function useLiveAutomation() {
               martingaleRef.current = { level: 0, amount: configRef.current.initialTradeAmount };
             } else {
               const newLevel = martingaleRef.current.level + 1;
-              if (newLevel < configRef.current.maxMartingaleLevel) {
+              if (newLevel >= configRef.current.maxMartingaleLevel) {
+                // CRITICAL: Stop bot when max consecutive losses reached
+                toast.error(`🛑 Max martingale level (${configRef.current.maxMartingaleLevel}) reached — stopping automation`);
+                stopAutomation();
+                return;
+              } else {
                 martingaleRef.current = {
                   level: newLevel,
                   amount: martingaleRef.current.amount * configRef.current.martingaleMultiplier,
                 };
-              } else {
-                martingaleRef.current = { level: 0, amount: configRef.current.initialTradeAmount };
               }
             }
           }
