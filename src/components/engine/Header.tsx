@@ -36,7 +36,7 @@ export function Header({ marketCount, wsStatus }: HeaderProps) {
             </h1>
             <div className="flex items-center gap-1.5 mt-0.5">
               <span className="text-[7px] md:text-[9px] text-signal-buy font-mono font-bold px-1 py-0.5 bg-signal-buy-bg rounded border border-signal-buy/20 uppercase tracking-widest">
-                v2.1 PRO
+                v3.0 PRO
               </span>
               <div className="hidden sm:flex items-center gap-1.5 text-[8px] text-engine-text-dim font-mono">
                 {wsStatus === "connected" ? (

@@ -142,8 +142,8 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     100
   );
 
-  // Only generate if score ≥ 20
-  if (totalScore < 20) return null;
+  // Only generate if score ≥ 25 for higher quality signals
+  if (totalScore < 25) return null;
 
   const trendStrength = Math.abs(buySignals - sellSignals) / Math.max(buySignals + sellSignals, 1) * 100;
 

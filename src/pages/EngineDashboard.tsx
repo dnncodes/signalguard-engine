@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Layers, History } from "lucide-react";
 import { Header } from "@/components/engine/Header";
+import { HeroSection } from "@/components/engine/HeroSection";
 import { MarketTicker } from "@/components/engine/MarketTicker";
 import { BacktestPanel } from "@/components/engine/BacktestPanel";
 import { LiveAutomationPanel } from "@/components/engine/LiveAutomationPanel";
@@ -27,6 +28,7 @@ export default function EngineDashboard() {
   return (
     <div className="min-h-screen bg-engine-bg text-engine-text-primary font-sans selection:bg-signal-buy/30">
       <Header marketCount={status.length} wsStatus={wsStatus} />
+      <HeroSection status={status} signals={signals} wsStatus={wsStatus} />
       <MarketTicker status={status} />
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
