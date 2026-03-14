@@ -14,7 +14,180 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      backtest_sessions: {
+        Row: {
+          created_at: string
+          duration_hours: number
+          final_balance: number | null
+          id: string
+          initial_balance: number
+          initial_trade_amount: number
+          is_profitable: boolean | null
+          martingale_multiplier: number
+          max_drawdown: string | null
+          max_martingale_level: number
+          net_profit: number | null
+          profit_factor: string | null
+          profit_target: number | null
+          results: Json | null
+          stop_reason: string | null
+          symbols: string[]
+          timeframe_minutes: number
+          total_losses: number | null
+          total_trades: number | null
+          total_wins: number | null
+          win_rate: string | null
+        }
+        Insert: {
+          created_at?: string
+          duration_hours: number
+          final_balance?: number | null
+          id?: string
+          initial_balance: number
+          initial_trade_amount: number
+          is_profitable?: boolean | null
+          martingale_multiplier: number
+          max_drawdown?: string | null
+          max_martingale_level: number
+          net_profit?: number | null
+          profit_factor?: string | null
+          profit_target?: number | null
+          results?: Json | null
+          stop_reason?: string | null
+          symbols: string[]
+          timeframe_minutes: number
+          total_losses?: number | null
+          total_trades?: number | null
+          total_wins?: number | null
+          win_rate?: string | null
+        }
+        Update: {
+          created_at?: string
+          duration_hours?: number
+          final_balance?: number | null
+          id?: string
+          initial_balance?: number
+          initial_trade_amount?: number
+          is_profitable?: boolean | null
+          martingale_multiplier?: number
+          max_drawdown?: string | null
+          max_martingale_level?: number
+          net_profit?: number | null
+          profit_factor?: string | null
+          profit_target?: number | null
+          results?: Json | null
+          stop_reason?: string | null
+          symbols?: string[]
+          timeframe_minutes?: number
+          total_losses?: number | null
+          total_trades?: number | null
+          total_wins?: number | null
+          win_rate?: string | null
+        }
+        Relationships: []
+      }
+      signals: {
+        Row: {
+          created_at: string
+          details: string | null
+          id: number
+          metrics: Json | null
+          price: number
+          score: number | null
+          symbol: string
+          time: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          details?: string | null
+          id?: number
+          metrics?: Json | null
+          price: number
+          score?: number | null
+          symbol: string
+          time?: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          details?: string | null
+          id?: number
+          metrics?: Json | null
+          price?: number
+          score?: number | null
+          symbol?: string
+          time?: string
+          type?: string
+        }
+        Relationships: []
+      }
+      trade_logs: {
+        Row: {
+          account_type: string
+          amount: number
+          balance_after: number | null
+          contract_id: number | null
+          contract_type: string
+          created_at: string
+          currency: string
+          duration_minutes: number | null
+          entry_price: number | null
+          error_message: string | null
+          exit_price: number | null
+          id: number
+          metadata: Json | null
+          profit: number | null
+          result: string | null
+          source: string
+          symbol: string
+          trade_type: string
+          transaction_id: number | null
+        }
+        Insert: {
+          account_type?: string
+          amount: number
+          balance_after?: number | null
+          contract_id?: number | null
+          contract_type?: string
+          created_at?: string
+          currency?: string
+          duration_minutes?: number | null
+          entry_price?: number | null
+          error_message?: string | null
+          exit_price?: number | null
+          id?: number
+          metadata?: Json | null
+          profit?: number | null
+          result?: string | null
+          source?: string
+          symbol: string
+          trade_type: string
+          transaction_id?: number | null
+        }
+        Update: {
+          account_type?: string
+          amount?: number
+          balance_after?: number | null
+          contract_id?: number | null
+          contract_type?: string
+          created_at?: string
+          currency?: string
+          duration_minutes?: number | null
+          entry_price?: number | null
+          error_message?: string | null
+          exit_price?: number | null
+          id?: number
+          metadata?: Json | null
+          profit?: number | null
+          result?: string | null
+          source?: string
+          symbol?: string
+          trade_type?: string
+          transaction_id?: number | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
