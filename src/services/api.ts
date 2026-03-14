@@ -3,8 +3,6 @@ import {
   ApiError,
   type Signal,
   type MarketStatus,
-  type BacktestParams,
-  type BacktestResult,
   type TestTradeResult,
   type BalanceResponse,
 } from "@/types/engine";
@@ -50,9 +48,7 @@ async function callEdgeFunction<T>(
   }
 
   const data = await res.json();
-  if (data.error) {
-    throw new ApiError(data.error, "SERVER_ERROR");
-  }
+  if (data.error) throw new ApiError(data.error, "SERVER_ERROR");
   return data as T;
 }
 
@@ -79,7 +75,6 @@ export async function fetchSignals(): Promise<Signal[]> {
 }
 
 export async function fetchMarketStatus(): Promise<MarketStatus[]> {
-  // Use edge function to get active symbols from Deriv
   try {
     const symbols = await callEdgeFunction<any[]>("active_symbols");
     return symbols.map((s: any) => ({
@@ -89,7 +84,6 @@ export async function fetchMarketStatus(): Promise<MarketStatus[]> {
       lastPrice: s.spot || 0,
     }));
   } catch {
-    // Fallback: return empty
     return [];
   }
 }
@@ -102,11 +96,7 @@ export async function fetchBalance(
     currency: string;
     loginid: string;
   }>("balance");
-
-  return {
-    balance: data.balance,
-    currency: data.currency,
-  };
+  return { balance: data.balance, currency: data.currency };
 }
 
 export async function executeTrade(params: {
@@ -137,14 +127,16 @@ export async function executeTrade(params: {
   });
 }
 
-export async function sellContract(contractId: number): Promise<{
-  success: boolean;
-  sold_for: number;
-  balance_after: number;
+export async function settleContract(contractId: number): Promise<{
+  settled: boolean;
+  profit?: number;
+  status: string;
+  sold_for?: number;
+  balance_after?: number;
 }> {
-  return callEdgeFunction("sell", {
+  return callEdgeFunction("settle", {
     method: "POST",
-    body: { contract_id: contractId, price: 0 },
+    body: { contract_id: contractId },
   });
 }
 
@@ -185,7 +177,7 @@ export async function executeTestTrade(params: {
 
   return {
     contractId: result.contract_id,
-    result: "PENDING" as any, // Contract is now open, result comes later
+    result: "PENDING",
     profit: 0,
     symbol: params.symbol,
     type: params.type,
@@ -213,7 +205,6 @@ export async function insertSignal(signal: {
     score: signal.score,
     metrics: signal.metrics as any,
   });
-
   if (error) throw new ApiError(`Failed to insert signal: ${error.message}`, "SERVER_ERROR");
 }
 
@@ -223,7 +214,6 @@ export async function fetchTradeHistory(limit = 50): Promise<any[]> {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
-
   if (error) throw new ApiError(`Failed to fetch trade history: ${error.message}`, "SERVER_ERROR");
   return data || [];
 }
@@ -234,64 +224,16 @@ export async function fetchBacktestSessions(limit = 10): Promise<any[]> {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
-
   if (error) throw new ApiError(`Failed to fetch backtest sessions: ${error.message}`, "SERVER_ERROR");
   return data || [];
 }
 
-export async function saveBacktestSession(session: {
-  symbols: string[];
-  duration_hours: number;
-  timeframe_minutes: number;
-  initial_balance: number;
-  initial_trade_amount: number;
-  martingale_multiplier: number;
-  max_martingale_level: number;
-  profit_target?: number;
-  total_trades?: number;
-  total_wins?: number;
-  total_losses?: number;
-  win_rate?: string;
-  final_balance?: number;
-  net_profit?: number;
-  is_profitable?: boolean;
-  max_drawdown?: string;
-  profit_factor?: string;
-  stop_reason?: string;
-  results?: any;
-}): Promise<string> {
+export async function saveBacktestSession(session: Record<string, any>): Promise<string> {
   const { data, error } = await supabase
     .from("backtest_sessions")
     .insert(session as any)
     .select("id")
     .single();
-
   if (error) throw new ApiError(`Failed to save backtest: ${error.message}`, "SERVER_ERROR");
   return data.id;
-}
-
-// Keep legacy function signatures for backward compatibility
-export async function runBacktest(
-  params: BacktestParams,
-  signal?: AbortSignal
-): Promise<BacktestResult> {
-  // Backtesting is done client-side using WebSocket tick data
-  // This is a placeholder — the actual backtest logic runs in the hook
-  throw new ApiError("Use the WebSocket-based backtest engine", "UNKNOWN");
-}
-
-export async function stopBacktest(): Promise<void> {
-  // No-op, handled client-side
-}
-
-export async function startLiveAutomation(params: any): Promise<void> {
-  throw new ApiError("Live automation uses the WebSocket engine directly", "UNKNOWN");
-}
-
-export async function fetchLiveStatus(): Promise<any> {
-  throw new ApiError("Use WebSocket for live status", "UNKNOWN");
-}
-
-export async function stopLiveAutomation(): Promise<void> {
-  // No-op
 }
