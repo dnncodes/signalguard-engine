@@ -5,6 +5,8 @@ import {
   type Signal,
   type MarketStatus,
   type BacktestResult,
+  type BacktestTrade,
+  type BacktestSymbolResult,
   type LiveAutomationStatus,
   type LiveTrade,
   type TestTradeResult,
@@ -257,12 +259,16 @@ export function useBacktest() {
     abortRef.current = false;
 
     try {
+      // Calculate required ticks: for 1s indices, 1 hour ≈ 3600 ticks
+      // Request enough data for the full duration + 50 warmup ticks
+      const ticksNeeded = Math.min(config.duration * 3600 + 100, 5000);
+
       // Fetch history for ALL symbols in parallel
       const symbolHistories: Map<string, { prices: number[]; times: number[] }> = new Map();
 
       const fetches = await Promise.allSettled(
         config.symbols.map(async (symbol) => {
-          const history = await derivWs.getTickHistory(symbol, 500);
+          const history = await derivWs.getTickHistory(symbol, ticksNeeded);
           if (!history?.prices || history.prices.length < 50) return null;
           return { symbol, prices: history.prices.map(Number), times: history.times.map(Number) };
         })
@@ -283,31 +289,53 @@ export function useBacktest() {
         return;
       }
 
-      // Find minimum data length across all symbols
-      let minLength = Infinity;
-      for (const data of symbolHistories.values()) {
-        if (data.prices.length < minLength) minLength = data.prices.length;
+      // Use timestamp-based stepping: find time range across all symbols
+      // Get the reference timeline from the first symbol
+      const firstData = symbolHistories.values().next().value!;
+      const startTime = firstData.times[50]; // Skip first 50 for warmup
+      const timeframeSeconds = config.timeframe * 60; // Convert minutes to seconds
+      const expectedTrades = Math.floor(config.duration * 60 / config.timeframe);
+
+      // Build time-aligned index lookup for each symbol
+      // For each 5-minute interval, find the nearest tick index
+      function findNearestIndex(times: number[], targetTime: number): number {
+        let lo = 0, hi = times.length - 1;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          if (times[mid] < targetTime) lo = mid + 1;
+          else hi = mid;
+        }
+        return lo;
       }
 
-      const allTrades: any[] = [];
+      const allTrades: BacktestTrade[] = [];
       let balance = config.initialBalance;
       let totalWins = 0;
       let totalLosses = 0;
+      let grossWins = 0;
+      let grossLosses = 0;
       let maxDrawdown = 0;
       let peakBalance = balance;
       let tradeAmount = config.initialTradeAmount;
       let martingaleLevel = 0;
+      let stopReason: "profitTarget" | "martingale" | null = null;
 
       // Per-symbol tracking
-      const symbolStats: Map<string, { wins: number; losses: number }> = new Map();
+      const symbolStats: Map<string, { wins: number; losses: number; grossWin: number; grossLoss: number }> = new Map();
       for (const symbol of symbolHistories.keys()) {
-        symbolStats.set(symbol, { wins: 0, losses: 0 });
+        symbolStats.set(symbol, { wins: 0, losses: 0, grossWin: 0, grossLoss: 0 });
       }
 
-      // Walk through time intervals — at each step, analyze ALL symbols and pick the best
-      for (let i = 50; i < minLength - config.timeframe && !abortRef.current; i += config.timeframe) {
+      // Walk through TIME intervals — exactly 1 trade per 5-minute slot
+      for (let interval = 0; interval < expectedTrades && !abortRef.current; interval++) {
         if (balance <= 0) break;
-        if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) break;
+        if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) {
+          stopReason = "profitTarget";
+          break;
+        }
+
+        const intervalStartTime = startTime + interval * timeframeSeconds;
+        const intervalEndTime = intervalStartTime + timeframeSeconds;
 
         // Analyze all symbols at this time step
         interface CandidateWithMeta {
@@ -317,6 +345,8 @@ export function useBacktest() {
           confidence: number;
           entryPrice: number;
           exitPrice: number;
+          entryIdx: number;
+          exitIdx: number;
           details: string;
           pattern: string | null;
         }
@@ -324,18 +354,25 @@ export function useBacktest() {
         const candidates: CandidateWithMeta[] = [];
 
         for (const [symbol, data] of symbolHistories) {
-          const windowPrices = data.prices.slice(0, i + 1);
+          const entryIdx = findNearestIndex(data.times, intervalStartTime);
+          const exitIdx = findNearestIndex(data.times, intervalEndTime);
+
+          // Need enough data for analysis (at least 50 points before entry)
+          if (entryIdx < 50 || exitIdx >= data.prices.length || entryIdx >= exitIdx) continue;
+
+          const windowPrices = data.prices.slice(0, entryIdx + 1);
           const candidate = analyzeSymbol(windowPrices);
 
           if (candidate) {
-            const exitIdx = Math.min(i + config.timeframe, data.prices.length - 1);
             candidates.push({
               symbol,
               type: candidate.type,
               score: candidate.score,
               confidence: candidate.confidence,
-              entryPrice: data.prices[i],
+              entryPrice: data.prices[entryIdx],
               exitPrice: data.prices[exitIdx],
+              entryIdx,
+              exitIdx,
               details: candidate.details,
               pattern: candidate.pattern,
             });
@@ -352,22 +389,30 @@ export function useBacktest() {
           (best.type === "BUY" && best.exitPrice > best.entryPrice) ||
           (best.type === "SELL" && best.exitPrice < best.entryPrice);
 
+        const currentTradeAmount = tradeAmount;
+        const payout = currentTradeAmount * 0.85;
+
         if (isWin) {
-          balance += tradeAmount * 0.85;
+          balance += payout;
           totalWins++;
+          grossWins += payout;
           const stats = symbolStats.get(best.symbol)!;
           stats.wins++;
+          stats.grossWin += payout;
           tradeAmount = config.initialTradeAmount;
           martingaleLevel = 0;
         } else {
-          balance -= tradeAmount;
+          balance -= currentTradeAmount;
           totalLosses++;
+          grossLosses += currentTradeAmount;
           const stats = symbolStats.get(best.symbol)!;
           stats.losses++;
+          stats.grossLoss += currentTradeAmount;
           martingaleLevel++;
           if (martingaleLevel < config.maxMartingaleLevel) {
-            tradeAmount *= config.martingaleMultiplier;
+            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
           } else {
+            stopReason = "martingale";
             tradeAmount = config.initialTradeAmount;
             martingaleLevel = 0;
           }
@@ -377,16 +422,13 @@ export function useBacktest() {
         const drawdown = peakBalance > 0 ? ((peakBalance - balance) / peakBalance) * 100 : 0;
         if (drawdown > maxDrawdown) maxDrawdown = drawdown;
 
-        // Use the first symbol's times for timestamps
-        const firstTimes = symbolHistories.values().next().value!.times;
-
         allTrades.push({
-          executionTime: new Date(firstTimes[i] * 1000).toISOString(),
+          executionTime: new Date(intervalStartTime * 1000).toISOString(),
           symbol: best.symbol,
           type: best.type,
           entryPrice: best.entryPrice,
           exitPrice: best.exitPrice,
-          tradeAmount: isWin ? config.initialTradeAmount : tradeAmount / config.martingaleMultiplier,
+          tradeAmount: currentTradeAmount,
           result: isWin ? "WIN" : "LOSS",
           newBalance: balance,
           score: best.score,
@@ -398,7 +440,7 @@ export function useBacktest() {
       }
 
       // Build per-symbol results
-      const perSymbolResults: any[] = [];
+      const perSymbolResults: BacktestSymbolResult[] = [];
       for (const [symbol, stats] of symbolStats) {
         const total = stats.wins + stats.losses;
         if (total > 0) {
@@ -409,7 +451,7 @@ export function useBacktest() {
             losses: stats.losses,
             winRate: ((stats.wins / total) * 100).toFixed(1),
             finalBalance: balance.toFixed(2),
-            netProfit: (balance - config.initialBalance).toFixed(2),
+            netProfit: (stats.grossWin - stats.grossLoss).toFixed(2),
             trades: [],
           });
         }
@@ -421,6 +463,11 @@ export function useBacktest() {
       const totalTrades = totalWins + totalLosses;
       const netProfit = balance - config.initialBalance;
 
+      // Profit factor = gross wins / gross losses (NOT win count / loss count)
+      const profitFactor = grossLosses > 0
+        ? (grossWins / grossLosses).toFixed(2)
+        : grossWins > 0 ? "∞" : "0";
+
       const backtestResult: BacktestResult = {
         duration: config.duration,
         timeframe: config.timeframe,
@@ -428,6 +475,7 @@ export function useBacktest() {
         initialTradeAmount: config.initialTradeAmount,
         martingaleMultiplier: config.martingaleMultiplier,
         maxMartingaleLevel: config.maxMartingaleLevel,
+        stopReason,
         summary: {
           totalTrades, totalWins, totalLosses,
           winRate: totalTrades > 0 ? ((totalWins / totalTrades) * 100).toFixed(1) + "%" : "0%",
@@ -436,10 +484,10 @@ export function useBacktest() {
           totalNetProfit: netProfit.toFixed(2),
           isProfitable: netProfit > 0,
           maxDrawdown: maxDrawdown.toFixed(1) + "%",
-          profitFactor: totalLosses > 0 ? (totalWins / totalLosses).toFixed(2) : totalWins > 0 ? "∞" : "0",
+          profitFactor,
         },
         results: perSymbolResults,
-        allTrades: allTrades.reverse(), // Latest trade first
+        allTrades, // Chronological order (oldest first)
       };
 
       setResults(backtestResult);
@@ -447,7 +495,12 @@ export function useBacktest() {
       if (totalTrades === 0) {
         toast.warning("No trade signals generated — try different symbols or longer duration");
       } else {
-        toast.success(`Backtest complete: ${totalTrades} trades across ${symbolHistories.size} symbols (best-confidence selection)`);
+        const dataMinutes = firstData.times.length > 50
+          ? Math.round((firstData.times[firstData.times.length - 1] - firstData.times[50]) / 60)
+          : 0;
+        toast.success(
+          `Backtest complete: ${totalTrades} trades (${config.duration}h × ${config.timeframe}min = ${expectedTrades} slots, ${dataMinutes}min of data)`
+        );
       }
 
       // Save to database
@@ -469,7 +522,8 @@ export function useBacktest() {
           net_profit: netProfit,
           is_profitable: netProfit > 0,
           max_drawdown: backtestResult.summary.maxDrawdown,
-          profit_factor: backtestResult.summary.profitFactor,
+          profit_factor: profitFactor,
+          stop_reason: stopReason,
           results: { allTrades: allTrades.slice(0, 100), perSymbol: perSymbolResults },
         });
       } catch (err) {
