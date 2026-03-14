@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { Activity, BarChart3, TrendingUp, Zap, Target, Shield, Clock } from "lucide-react";
+import { Activity, BarChart3, TrendingUp, Zap, Target, Clock } from "lucide-react";
 import type { MarketStatus, Signal } from "@/types/engine";
 import { SYMBOLS } from "@/types/engine";
 
@@ -76,9 +76,9 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
               <span className="text-signal-buy"> Command Center</span>
             </h2>
             <p className="text-[11px] text-engine-text-muted mt-2 max-w-xl leading-relaxed font-mono">
-              Monitoring <span className="text-engine-text-secondary font-bold">{stats.totalMarkets}</span> indices ·
-              EMA · RSI · MACD · ATR · Divergence · Engulfing ·
-              Best signal every <span className="text-signal-buy font-bold">5 min</span>
+              Advanced algorithmic trading engine for Volatility Indices. Real-time Smart Money Concepts &amp; technical analysis across{" "}
+              <span className="text-engine-text-secondary font-bold">{stats.totalMarkets} indices</span> — best signal every{" "}
+              <span className="text-signal-buy font-bold">5 min</span>.
             </p>
           </div>
 
@@ -151,7 +151,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
         </div>
 
         {/* Stats grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
           <StatCard
             icon={<Activity size={13} />}
             label="Markets"
@@ -170,7 +170,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
             icon={<BarChart3 size={13} />}
             label="Signals"
             value={`${stats.buySignals}B / ${stats.sellSignals}S`}
-            sub={`Avg: ${stats.avgScore}`}
+            sub={`Avg score: ${stats.avgScore}`}
             accent="neutral"
           />
           <StatCard
@@ -179,13 +179,6 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
             value="5 min"
             sub="Strict cycle"
             accent="buy"
-          />
-          <StatCard
-            icon={<Shield size={13} />}
-            label="Indicators"
-            value="6"
-            sub="EMA RSI MACD ATR"
-            accent="neutral"
           />
           <StatCard
             icon={<Zap size={13} />}
