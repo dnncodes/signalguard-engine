@@ -41,12 +41,22 @@ function handleApiError(err: unknown, context: string): string {
 export function useDerivConnection() {
   const [status, setStatus] = useState<ConnectionStatus>(derivWs.getStatus());
   const [latestTicks, setLatestTicks] = useState<Map<string, TickData>>(new Map());
+  const [prevTicks, setPrevTicks] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     derivWs.connect();
     const unsubStatus = derivWs.onStatusChange(setStatus);
     const unsubTick = derivWs.onTick((tick) => {
       setLatestTicks((prev) => {
+        // Store previous price before updating
+        const existing = prev.get(tick.symbol);
+        if (existing) {
+          setPrevTicks((p) => {
+            const next = new Map(p);
+            next.set(tick.symbol, existing.quote);
+            return next;
+          });
+        }
         const next = new Map(prev);
         next.set(tick.symbol, tick);
         return next;
@@ -62,7 +72,7 @@ export function useDerivConnection() {
     symbols.forEach((s) => derivWs.subscribeTicks(s));
   }, []);
 
-  return { wsStatus: status, latestTicks, subscribeTo };
+  return { wsStatus: status, latestTicks, prevTicks, subscribeTo };
 }
 
 // ─── useSignals (Realtime + 5-minute signal generation) ─────
@@ -72,7 +82,7 @@ export function useSignals() {
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { wsStatus, latestTicks, subscribeTo } = useDerivConnection();
+  const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection();
   const generatorRef = useRef<SignalGenerator | null>(null);
 
   // Initial load
@@ -87,7 +97,7 @@ export function useSignals() {
         setMarketStatus(statusData);
         setError(null);
 
-        // Subscribe to verified symbols only
+        // Subscribe to all 20 symbols
         const symbolKeys = Object.keys(SYMBOLS);
         subscribeTo(symbolKeys);
       } catch (err) {
@@ -117,9 +127,15 @@ export function useSignals() {
           score: candidate.score,
           metrics: candidate.metrics as any,
         });
+
+        // Send to Telegram
+        try {
+          await api.sendTelegramSignal(candidate);
+        } catch (tgErr) {
+          console.warn("[Telegram] Failed to send signal:", tgErr);
+        }
       } catch (err) {
         console.error("[SignalEngine] Failed to save signal:", err);
-        // Still show locally
         const localSignal: Signal = {
           id: Date.now(),
           symbol: candidate.symbol,
@@ -133,7 +149,7 @@ export function useSignals() {
       }
     });
 
-    generator.start(5 * 60 * 1000); // 5 minutes
+    generator.start(5 * 60 * 1000);
 
     return () => {
       unsub();
@@ -168,23 +184,28 @@ export function useSignals() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Update market status from WebSocket ticks
+  // Update market status from WebSocket ticks with direction tracking
   useEffect(() => {
     if (latestTicks.size === 0) return;
     setMarketStatus((prev) => {
       const updated = [...prev];
       for (const [symbol, tick] of latestTicks) {
-        if (!SYMBOLS[symbol]) continue; // Skip unverified symbols
+        if (!SYMBOLS[symbol]) continue;
+        const prevPrice = prevTicks.get(symbol);
+        const direction: "up" | "down" | "neutral" = prevPrice
+          ? tick.quote > prevPrice ? "up" : tick.quote < prevPrice ? "down" : "neutral"
+          : "neutral";
+
         const idx = updated.findIndex((m) => m.symbol === symbol);
         if (idx >= 0) {
-          updated[idx] = { ...updated[idx], lastPrice: tick.quote };
+          updated[idx] = { ...updated[idx], lastPrice: tick.quote, prevPrice, direction };
         } else {
-          updated.push({ symbol, name: SYMBOLS[symbol], candles: 0, lastPrice: tick.quote });
+          updated.push({ symbol, name: SYMBOLS[symbol], candles: 0, lastPrice: tick.quote, prevPrice, direction });
         }
       }
       return updated;
     });
-  }, [latestTicks]);
+  }, [latestTicks, prevTicks]);
 
   return { signals, status: marketStatus, loading, error, wsStatus };
 }
@@ -263,7 +284,6 @@ export function useBacktest() {
         let symbolWins = 0;
         let symbolLosses = 0;
 
-        // Use full analysis
         const ema9 = calculateEMA(prices, 9);
         const ema21 = calculateEMA(prices, 21);
         const rsi = calculateRSI(prices, 14);
@@ -283,16 +303,13 @@ export function useBacktest() {
 
           const rsiExtreme = rsi[i] < 30 || rsi[i] > 70;
 
-          // Need at least one trigger
           if (!emaCross && !macdCross && !rsiExtreme) continue;
 
-          // Score the setup
           let score = 0;
           if (emaCross) score += 30;
           if (macdCross) score += 25;
           if (rsiExtreme) score += 20;
 
-          // Check divergence
           const div = detectDivergence(prices.slice(0, i + 1), rsi.slice(0, i + 1));
           if (div) score += div.strength * 0.2;
 
@@ -474,15 +491,16 @@ export function useLiveAutomation() {
       return errs;
     }, []);
 
-  // Settle pending contracts (check every 30s)
+  // Settle pending contracts — check every 15s, settle after 5min+10s buffer
   const settlePendingContracts = useCallback(async () => {
     const pending = pendingContractsRef.current;
     if (pending.size === 0) return;
 
     const now = Date.now();
     for (const [contractId, info] of pending.entries()) {
-      // Wait at least 5 minutes before trying to settle
-      if (now - info.openedAt < 5 * 60 * 1000) continue;
+      // Wait at least 5 minutes + 10 second buffer before trying to settle
+      const CONTRACT_DURATION_MS = 5 * 60 * 1000 + 10 * 1000;
+      if (now - info.openedAt < CONTRACT_DURATION_MS) continue;
 
       try {
         const result = await api.settleContract(contractId);
@@ -530,8 +548,8 @@ export function useLiveAutomation() {
         }
       } catch (err) {
         console.warn(`Failed to settle ${contractId}:`, err);
-        // If contract is too old (>15 min), remove from pending to avoid stuck state
-        if (now - info.openedAt > 15 * 60 * 1000) {
+        // If contract is too old (>10 min past expiry), remove from pending
+        if (now - info.openedAt > 10 * 60 * 1000) {
           pending.delete(contractId);
           console.warn(`Removed stale contract ${contractId} from pending`);
         }
@@ -551,12 +569,11 @@ export function useLiveAutomation() {
         symbol: signal.symbol,
         amount: tradeAmount,
         contractType,
-        duration: 5, // Always 5 minutes
+        duration: 5,
         durationUnit: "m",
         source: "automation",
       });
 
-      // Track pending contract
       pendingContractsRef.current.set(result.contract_id, {
         symbol: signal.symbol,
         type: signal.type,
@@ -608,15 +625,14 @@ export function useLiveAutomation() {
         lossCount: 0,
       });
 
-      // Start signal generator
       const generator = new SignalGenerator(Object.keys(SYMBOLS));
       generatorRef.current = generator;
 
       generator.onSignal((signal) => executeTrade(signal));
-      generator.start(5 * 60 * 1000); // Signal every 5 minutes
+      generator.start(5 * 60 * 1000);
 
-      // Start settlement checker (every 30 seconds)
-      settleTimerRef.current = setInterval(() => settlePendingContracts(), 30 * 1000);
+      // Settlement checker every 15 seconds for faster settling
+      settleTimerRef.current = setInterval(() => settlePendingContracts(), 15 * 1000);
 
       // Auto-stop after duration
       stopTimerRef.current = setTimeout(() => {
@@ -659,7 +675,6 @@ export function useLiveAutomation() {
     loadBalance(accountType);
   }, [accountType, loadBalance]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (generatorRef.current) generatorRef.current.stop();
@@ -704,9 +719,10 @@ export function useTestTrade() {
         setResult(data);
         toast.success(`Trade placed! Contract #${data.contractId} — settling in ${params.durationMinutes}m`);
 
-        // Auto-settle after duration + 30s buffer
-        const settleDelay = (params.durationMinutes * 60 + 30) * 1000;
-        settleTimerRef.current = setInterval(async () => {
+        // Auto-settle: first attempt after duration + 15s buffer, then retry every 15s
+        const settleDelay = (params.durationMinutes * 60 + 15) * 1000;
+
+        const attemptSettle = async () => {
           try {
             const settled = await api.settleContract(data.contractId);
             if (settled.settled) {
@@ -722,23 +738,13 @@ export function useTestTrade() {
           } catch {
             // Keep retrying
           }
-        }, 30000);
+        };
 
-        // First attempt after duration
-        setTimeout(async () => {
-          try {
-            const settled = await api.settleContract(data.contractId);
-            if (settled.settled) {
-              if (settleTimerRef.current) clearInterval(settleTimerRef.current);
-              const profit = settled.profit || 0;
-              setResult((prev) =>
-                prev ? { ...prev, result: profit >= 0 ? "WIN" : "LOSS", profit } : prev
-              );
-              toast[profit >= 0 ? "success" : "error"](
-                `Contract #${data.contractId} settled: ${profit >= 0 ? "WIN" : "LOSS"} ($${profit.toFixed(2)})`
-              );
-            }
-          } catch { /* retry will catch it */ }
+        // First attempt after contract expiry
+        setTimeout(() => {
+          attemptSettle();
+          // Then retry every 15 seconds
+          settleTimerRef.current = setInterval(attemptSettle, 15000);
         }, settleDelay);
       } catch (err) {
         handleApiError(err, "Test trade failed");
@@ -783,4 +789,3 @@ export function useTradeHistory() {
 
   return { trades, backtests, loading, reload: load };
 }
-

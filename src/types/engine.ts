@@ -1,18 +1,28 @@
 /**
  * Verified Deriv synthetic index symbols with real-time data.
- * Only includes symbols confirmed to stream live ticks.
+ * 20 confirmed symbols that stream live ticks.
  */
 export const SYMBOLS: Record<string, string> = {
-  "1HZ10V": "Volatility 10 (1s)",
-  "R_10": "Volatility 10",
-  "1HZ25V": "Volatility 25 (1s)",
-  "R_25": "Volatility 25",
-  "1HZ50V": "Volatility 50 (1s)",
-  "R_50": "Volatility 50",
-  "1HZ75V": "Volatility 75 (1s)",
-  "R_75": "Volatility 75",
-  "1HZ100V": "Volatility 100 (1s)",
-  "R_100": "Volatility 100",
+  "1HZ10V": "Volatility 10 (1s) Index",
+  "R_10": "Volatility 10 Index",
+  "1HZ15V": "Volatility 15 (1s) Index",
+  "1HZ25V": "Volatility 25 (1s) Index",
+  "R_25": "Volatility 25 Index",
+  "1HZ30V": "Volatility 30 (1s) Index",
+  "1HZ50V": "Volatility 50 (1s) Index",
+  "R_50": "Volatility 50 Index",
+  "1HZ75V": "Volatility 75 (1s) Index",
+  "R_75": "Volatility 75 Index",
+  "1HZ90V": "Volatility 90 (1s) Index",
+  "1HZ100V": "Volatility 100 (1s) Index",
+  "R_100": "Volatility 100 Index",
+  "BOOM500": "Boom 500 Index",
+  "BOOM1000": "Boom 1000 Index",
+  "CRASH500": "Crash 500 Index",
+  "CRASH1000": "Crash 1000 Index",
+  "JD10": "Jump 10 Index",
+  "JD25": "Jump 25 Index",
+  "JD50": "Jump 50 Index",
 };
 
 export interface Signal {
@@ -31,6 +41,8 @@ export interface MarketStatus {
   name: string;
   candles: number;
   lastPrice: number;
+  prevPrice?: number;
+  direction?: "up" | "down" | "neutral";
 }
 
 export interface BacktestTrade {
