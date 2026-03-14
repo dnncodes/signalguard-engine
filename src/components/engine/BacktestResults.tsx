@@ -177,7 +177,7 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                       </div>
                       <div className="text-[10px] font-mono text-engine-text-muted">{result.totalTrades} trades</div>
                     </div>
-                    <div className="grid grid-cols-4 gap-2 text-[9px] font-mono">
+                    <div className="grid grid-cols-3 gap-2 text-[9px] font-mono">
                       <div>
                         <p className="text-engine-text-muted">Win Rate</p>
                         <p className="text-signal-buy font-bold">{result.winRate}%</p>
@@ -192,12 +192,8 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                       <div>
                         <p className="text-engine-text-muted">Net Profit</p>
                         <p className={`font-bold ${parseFloat(result.netProfit) > 0 ? "text-signal-buy" : "text-signal-sell"}`}>
-                          ${result.netProfit}
+                          {parseFloat(result.netProfit) > 0 ? "+" : ""}${result.netProfit}
                         </p>
-                      </div>
-                      <div>
-                        <p className="text-engine-text-muted">Final Balance</p>
-                        <p className="text-engine-text-primary font-bold">${result.finalBalance}</p>
                       </div>
                     </div>
                   </div>
