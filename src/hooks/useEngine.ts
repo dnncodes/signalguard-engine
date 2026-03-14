@@ -815,7 +815,7 @@ export function useLiveAutomation() {
 
   useEffect(() => {
     return () => {
-      if (generatorRef.current) generatorRef.current.stop();
+      if (realtimeChannelRef.current) supabase.removeChannel(realtimeChannelRef.current);
       if (settleTimerRef.current) clearInterval(settleTimerRef.current);
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     };
