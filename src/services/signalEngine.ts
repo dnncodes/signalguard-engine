@@ -274,11 +274,15 @@ export class SignalGenerator {
     return candidates[0] || null;
   }
 
+  private lastSignalTime = 0;
+  private MIN_INTERVAL_MS = 4 * 60 * 1000; // Never fire signals less than 4 minutes apart
+
   start(intervalMs = 5 * 60 * 1000) {
     if (this.running) return;
     this.running = true;
-    this.tick();
+    // Do NOT fire immediately — wait for the first full interval
     this.intervalId = setInterval(() => this.tick(), intervalMs);
+    console.log(`[SignalEngine] Started — signals every ${intervalMs / 1000}s (min gap: ${this.MIN_INTERVAL_MS / 1000}s)`);
   }
 
   stop() {
@@ -291,8 +295,16 @@ export class SignalGenerator {
 
   private async tick() {
     try {
+      const now = Date.now();
+      const elapsed = now - this.lastSignalTime;
+      if (elapsed < this.MIN_INTERVAL_MS) {
+        console.log(`[SignalEngine] Skipping — only ${Math.round(elapsed / 1000)}s since last signal (min ${this.MIN_INTERVAL_MS / 1000}s)`);
+        return;
+      }
+
       const signal = await this.generateSignal();
       if (signal) {
+        this.lastSignalTime = Date.now();
         this.callbacks.forEach((cb) => cb(signal));
       }
     } catch (err) {

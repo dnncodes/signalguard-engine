@@ -10,14 +10,16 @@ interface TestTradePanelProps {
     amount: number;
     symbol: string;
     durationMinutes: number;
+    direction?: "BUY" | "SELL";
   }) => void;
 }
 
 export function TestTradePanel({ loading, result, onExecute }: TestTradePanelProps) {
   const [accountType, setAccountType] = useState<"demo" | "live">("demo");
-  const [amount, setAmount] = useState(1.0); // Deriv min is $0.35
+  const [amount, setAmount] = useState(1.0);
   const [duration, setDuration] = useState(5);
   const [symbol, setSymbol] = useState("R_10");
+  const [direction, setDirection] = useState<"" | "BUY" | "SELL">("");
 
   return (
     <section className="p-6 engine-panel rounded-lg shadow-2xl">
@@ -57,8 +59,26 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
           </select>
         </div>
 
+        <div className="space-y-1.5">
+          <label className="engine-label">Direction</label>
+          <select value={direction} onChange={(e) => setDirection(e.target.value as "" | "BUY" | "SELL")} className="w-full engine-input">
+            <option value="">Auto (Latest Signal)</option>
+            <option value="BUY">BUY (CALL)</option>
+            <option value="SELL">SELL (PUT)</option>
+          </select>
+          <p className="text-[8px] text-engine-text-dim font-mono">
+            Auto = follows the latest signal direction for this symbol
+          </p>
+        </div>
+
         <button
-          onClick={() => onExecute({ accountType, amount, symbol, durationMinutes: duration })}
+          onClick={() => onExecute({
+            accountType,
+            amount,
+            symbol,
+            durationMinutes: duration,
+            direction: direction || undefined,
+          })}
           disabled={loading}
           className={`w-full py-3 rounded-md font-bold transition-all text-xs uppercase tracking-widest flex items-center justify-center gap-2 ${
             loading
@@ -73,11 +93,17 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
           <div className={`p-4 rounded-md border ${
             result.result === "WIN"
               ? "bg-signal-buy-bg border-signal-buy/20"
-              : "bg-signal-sell-bg border-signal-sell/20"
+              : result.result === "LOSS"
+              ? "bg-signal-sell-bg border-signal-sell/20"
+              : "bg-engine-surface border-engine-border"
           }`}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold uppercase tracking-widest text-engine-text-secondary">Result</span>
-              <span className={`text-xs font-bold font-mono ${result.result === "WIN" ? "text-signal-buy" : "text-signal-sell"}`}>
+              <span className={`text-xs font-bold font-mono ${
+                result.result === "WIN" ? "text-signal-buy"
+                : result.result === "LOSS" ? "text-signal-sell"
+                : "text-engine-text-muted"
+              }`}>
                 {result.result}
               </span>
             </div>
