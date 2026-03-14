@@ -44,7 +44,7 @@ export function BacktestPanel({
 
   useEffect(() => {
     onErrorsChange(onValidate(config));
-  }, [duration, initialTradeAmount, initialBalance, martingaleMultiplier, maxMartingaleLevel, profitTarget]);
+  }, [symbols, duration, initialTradeAmount, initialBalance, martingaleMultiplier, maxMartingaleLevel, profitTarget]);
 
   const hasErrors = Object.keys(errors).length > 0;
 
