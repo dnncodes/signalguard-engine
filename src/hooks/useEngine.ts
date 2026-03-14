@@ -392,6 +392,9 @@ export function useBacktest() {
         const currentTradeAmount = tradeAmount;
         const payout = currentTradeAmount * 0.85;
 
+        // Track the level at which this trade was placed BEFORE outcome
+        const tradePlacedAtLevel = martingaleLevel;
+
         if (isWin) {
           balance += payout;
           totalWins++;
@@ -409,12 +412,11 @@ export function useBacktest() {
           stats.losses++;
           stats.grossLoss += currentTradeAmount;
           martingaleLevel++;
-          if (martingaleLevel < config.maxMartingaleLevel) {
-            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
-          } else {
+          if (martingaleLevel >= config.maxMartingaleLevel) {
+            // CRITICAL: Stop trading when max consecutive losses reached
             stopReason = "martingale";
-            tradeAmount = config.initialTradeAmount;
-            martingaleLevel = 0;
+          } else {
+            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
           }
         }
 
