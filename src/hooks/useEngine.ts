@@ -16,11 +16,15 @@ import { derivWs, type TickData, type ConnectionStatus } from "@/services/derivW
 import {
   SignalGenerator,
   type SignalCandidate,
+  analyzeSymbol,
+} from "@/services/signalEngine";
+import {
   calculateEMA,
   calculateRSI,
   calculateMACD,
-  detectDivergence,
-} from "@/services/signalEngine";
+  calculateATR,
+} from "@/services/indicators";
+import { detectDivergence, detectEngulfing } from "@/services/patterns";
 
 // ─── Error handler ───────────────────────────────────────────
 
