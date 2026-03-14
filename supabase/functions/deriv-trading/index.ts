@@ -104,14 +104,93 @@ async function sendTelegramMessage(text: string): Promise<void> {
 
 // Symbol display names
 const SYMBOL_NAMES: Record<string, string> = {
-  "1HZ10V": "Vol 10 (1s)", "R_10": "Vol 10", "1HZ15V": "Vol 15 (1s)",
-  "1HZ25V": "Vol 25 (1s)", "R_25": "Vol 25", "1HZ30V": "Vol 30 (1s)",
-  "1HZ50V": "Vol 50 (1s)", "R_50": "Vol 50", "1HZ75V": "Vol 75 (1s)",
-  "R_75": "Vol 75", "1HZ90V": "Vol 90 (1s)", "1HZ100V": "Vol 100 (1s)",
-  "R_100": "Vol 100", "BOOM500": "Boom 500", "BOOM1000": "Boom 1000",
-  "CRASH500": "Crash 500", "CRASH1000": "Crash 1000",
-  "JD10": "Jump 10", "JD25": "Jump 25", "JD50": "Jump 50",
+  "1HZ10V": "Volatility 10 (1s) Index", "R_10": "Volatility 10 Index",
+  "1HZ15V": "Volatility 15 (1s) Index", "1HZ25V": "Volatility 25 (1s) Index",
+  "R_25": "Volatility 25 Index", "1HZ30V": "Volatility 30 (1s) Index",
+  "1HZ50V": "Volatility 50 (1s) Index", "R_50": "Volatility 50 Index",
+  "1HZ75V": "Volatility 75 (1s) Index", "R_75": "Volatility 75 Index",
+  "1HZ90V": "Volatility 90 (1s) Index", "1HZ100V": "Volatility 100 (1s) Index",
+  "R_100": "Volatility 100 Index", "BOOM500": "Boom 500 Index",
+  "BOOM1000": "Boom 1000 Index", "CRASH500": "Crash 500 Index",
+  "CRASH1000": "Crash 1000 Index", "JD10": "Jump 10 Index",
+  "JD25": "Jump 25 Index", "JD50": "Jump 50 Index",
 };
+
+// ─── Professional Telegram Signal Formatter ──────────────────
+
+function formatSignalTelegram(body: any): string {
+  const {
+    symbol, type, price, score, confidence, details, logic, pattern, metrics
+  } = body;
+
+  const name = SYMBOL_NAMES[symbol] || symbol;
+  const emoji = type === "BUY" ? "🟢" : "🔴";
+  const action = type === "BUY" ? "BUY / RISE" : "SELL / FALL";
+  const now = new Date();
+  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+  const lines: string[] = [
+    `${emoji} <b>Confidence: ${confidence || score || 0}%</b>`,
+    ``,
+    `⚡ <b>ACTION: ${action}</b>`,
+    `📊 Symbol: ${name}`,
+    `💰 Entry: <code>${Number(price).toFixed(2)}</code>`,
+    `⏰ Time: ${time}`,
+  ];
+
+  // Pattern line
+  if (pattern) {
+    lines.push(``);
+    lines.push(`🔥 <b>${pattern}</b>`);
+  }
+
+  // Technical Metrics
+  lines.push(``);
+  lines.push(`📐 <b>Technical Metrics:</b>`);
+
+  if (metrics) {
+    if (metrics.ema9 != null) lines.push(`EMA 9: <code>${Number(metrics.ema9).toFixed(2)}</code>`);
+    if (metrics.ema21 != null) lines.push(`EMA 21: <code>${Number(metrics.ema21).toFixed(2)}</code>`);
+    if (metrics.rsi != null) lines.push(`RSI: <code>${Number(metrics.rsi).toFixed(1)}</code>`);
+    if (metrics.atr != null) lines.push(`ATR: <code>${Number(metrics.atr).toFixed(4)}</code>`);
+    if (metrics.ema_gap_pct != null) lines.push(`EMA Gap: <code>${Number(metrics.ema_gap_pct).toFixed(4)}%</code>`);
+    if (metrics.ema_slope != null) lines.push(`Slope: <code>${Number(metrics.ema_slope).toFixed(6)}</code>`);
+    if (metrics.divergence) lines.push(`Divergence: <code>${metrics.divergence}</code>`);
+    if (metrics.engulfing) lines.push(`Pattern: <code>${metrics.engulfing} engulfing</code>`);
+  }
+
+  // Logic line
+  lines.push(``);
+  lines.push(`─────────────────`);
+  lines.push(`💡 <b>Logic:</b> ${logic || details || "—"}`);
+  lines.push(``);
+  lines.push(`📌 <i>High-probability 5-min scalping setup.</i>`);
+  lines.push(`🤖 <i>DNN Deriv Engine v3.0</i>`);
+
+  return lines.join("\n");
+}
+
+function formatSettlementTelegram(contractId: number, symbol: string, profit: number, balanceAfter?: number): string {
+  const name = SYMBOL_NAMES[symbol] || symbol;
+  const isWin = profit >= 0;
+  const emoji = isWin ? "✅" : "❌";
+
+  const lines = [
+    `${emoji} <b>Trade ${isWin ? "WON" : "LOST"}</b>`,
+    ``,
+    `📊 ${name}`,
+    `💰 P&L: <code>${isWin ? "+" : ""}$${profit.toFixed(2)}</code>`,
+    `📋 Contract: <code>#${contractId}</code>`,
+  ];
+
+  if (balanceAfter != null) {
+    lines.push(`💼 Balance: <code>$${Number(balanceAfter).toFixed(2)}</code>`);
+  }
+
+  lines.push(`⏰ ${new Date().toLocaleTimeString("en-US", { hour12: true })}`);
+
+  return lines.join("\n");
+}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -138,24 +217,7 @@ serve(async (req: Request) => {
     // ── TELEGRAM SIGNAL (no Deriv WS needed) ──
     if (action === "telegram_signal" && req.method === "POST") {
       const body = await req.json();
-      const { symbol, type, price, score, details } = body;
-      const name = SYMBOL_NAMES[symbol] || symbol;
-      const emoji = type === "BUY" ? "🟢" : "🔴";
-      const arrow = type === "BUY" ? "⬆️" : "⬇️";
-
-      const message = [
-        `${emoji} <b>${type} SIGNAL</b> ${arrow}`,
-        ``,
-        `📊 <b>${name}</b> (${symbol})`,
-        `💰 Price: <code>${Number(price).toFixed(2)}</code>`,
-        `🎯 Score: <b>${score || 0}/100</b>`,
-        ``,
-        `📝 ${details}`,
-        ``,
-        `⏰ ${new Date().toLocaleTimeString("en-US", { hour12: false })} UTC`,
-        `🤖 <i>DNN Deriv Engine v2.1</i>`,
-      ].join("\n");
-
+      const message = formatSignalTelegram(body);
       await sendTelegramMessage(message);
       return jsonResponse({ success: true, message: "Signal sent to Telegram" });
     }
@@ -215,8 +277,6 @@ serve(async (req: Request) => {
           throw new Error("Failed to get proposal from Deriv");
         }
 
-        console.log(`[deriv-trading] Proposal: ${proposalRes.proposal.id} | Ask: ${proposalRes.proposal.ask_price}`);
-
         const buyRes = await derivRequest(ws, {
           buy: proposalRes.proposal.id,
           price: proposalRes.proposal.ask_price,
@@ -225,7 +285,6 @@ serve(async (req: Request) => {
         const buyData = buyRes.buy;
         console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price}`);
 
-        // Log to database
         await supabase.from("trade_logs").insert({
           symbol,
           trade_type: contract_type === "CALL" ? "BUY" : "SELL",
@@ -257,7 +316,7 @@ serve(async (req: Request) => {
         });
       }
 
-      // ── SETTLE — Check and close expired contracts ──
+      // ── SETTLE ──
       if (action === "settle" && req.method === "POST") {
         const body = await req.json();
         const { contract_id } = body;
@@ -279,7 +338,6 @@ serve(async (req: Request) => {
         const isExpired = contract.is_expired || contract.is_settleable;
         const isOpen = !isExpired && !contract.is_sold;
 
-        // If still open and past expiry, try to sell
         if (isOpen && contract.is_valid_to_sell) {
           try {
             const sellRes = await derivRequest(ws, {
@@ -299,16 +357,8 @@ serve(async (req: Request) => {
               })
               .eq("contract_id", contract_id);
 
-            console.log(`[deriv-trading] Settled ${contract_id}: sold for ${sellData.sold_for} | Profit: ${profit}`);
-
-            // Send Telegram notification for settled trade
-            const name = SYMBOL_NAMES[contract.underlying] || contract.underlying;
-            const resultEmoji = profit >= 0 ? "✅" : "❌";
             await sendTelegramMessage(
-              `${resultEmoji} <b>Trade Settled</b>\n\n` +
-              `📊 ${name}\n` +
-              `💰 Profit: <code>$${profit.toFixed(2)}</code>\n` +
-              `📋 Contract: #${contract_id}`
+              formatSettlementTelegram(contract_id, contract.underlying, profit, sellData.balance_after)
             );
 
             return jsonResponse({
@@ -323,7 +373,6 @@ serve(async (req: Request) => {
           }
         }
 
-        // Already expired/settled
         if (isExpired || contract.is_sold) {
           const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
           const result = profit >= 0 ? "WIN" : "LOSS";
@@ -338,15 +387,8 @@ serve(async (req: Request) => {
             })
             .eq("contract_id", contract_id);
 
-          console.log(`[deriv-trading] Contract ${contract_id} already settled: ${result} | Profit: ${profit}`);
-
-          const name = SYMBOL_NAMES[contract.underlying] || contract.underlying;
-          const resultEmoji = profit >= 0 ? "✅" : "❌";
           await sendTelegramMessage(
-            `${resultEmoji} <b>Trade Settled</b>\n\n` +
-            `📊 ${name}\n` +
-            `💰 Profit: <code>$${profit.toFixed(2)}</code>\n` +
-            `📋 Contract: #${contract_id}`
+            formatSettlementTelegram(contract_id, contract.underlying, profit, contract.balance_after)
           );
 
           return jsonResponse({
@@ -357,7 +399,6 @@ serve(async (req: Request) => {
           });
         }
 
-        // Still running
         return jsonResponse({
           settled: false,
           status: "OPEN",

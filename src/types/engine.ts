@@ -55,7 +55,10 @@ export interface BacktestTrade {
   result: "WIN" | "LOSS";
   newBalance: number;
   score: number;
+  confidence?: number;
   martingaleLevel: number;
+  pattern?: string | null;
+  competingSymbols?: number;
 }
 
 export interface BacktestSymbolResult {

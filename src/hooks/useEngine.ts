@@ -16,11 +16,15 @@ import { derivWs, type TickData, type ConnectionStatus } from "@/services/derivW
 import {
   SignalGenerator,
   type SignalCandidate,
+  analyzeSymbol,
+} from "@/services/signalEngine";
+import {
   calculateEMA,
   calculateRSI,
   calculateMACD,
-  detectDivergence,
-} from "@/services/signalEngine";
+  calculateATR,
+} from "@/services/indicators";
+import { detectDivergence, detectEngulfing } from "@/services/patterns";
 
 // ─── Error handler ───────────────────────────────────────────
 
@@ -253,119 +257,166 @@ export function useBacktest() {
     abortRef.current = false;
 
     try {
+      // Fetch history for ALL symbols in parallel
+      const symbolHistories: Map<string, { prices: number[]; times: number[] }> = new Map();
+
+      const fetches = await Promise.allSettled(
+        config.symbols.map(async (symbol) => {
+          const history = await derivWs.getTickHistory(symbol, 500);
+          if (!history?.prices || history.prices.length < 50) return null;
+          return { symbol, prices: history.prices.map(Number), times: history.times.map(Number) };
+        })
+      );
+
+      for (const result of fetches) {
+        if (result.status === "fulfilled" && result.value) {
+          symbolHistories.set(result.value.symbol, {
+            prices: result.value.prices,
+            times: result.value.times,
+          });
+        }
+      }
+
+      if (symbolHistories.size === 0) {
+        toast.error("No valid data for any selected symbol");
+        setIsRunning(false);
+        return;
+      }
+
+      // Find minimum data length across all symbols
+      let minLength = Infinity;
+      for (const data of symbolHistories.values()) {
+        if (data.prices.length < minLength) minLength = data.prices.length;
+      }
+
       const allTrades: any[] = [];
       let balance = config.initialBalance;
       let totalWins = 0;
       let totalLosses = 0;
       let maxDrawdown = 0;
       let peakBalance = balance;
-      const perSymbolResults: any[] = [];
+      let tradeAmount = config.initialTradeAmount;
+      let martingaleLevel = 0;
 
-      for (const symbol of config.symbols) {
-        if (abortRef.current) break;
+      // Per-symbol tracking
+      const symbolStats: Map<string, { wins: number; losses: number }> = new Map();
+      for (const symbol of symbolHistories.keys()) {
+        symbolStats.set(symbol, { wins: 0, losses: 0 });
+      }
 
-        let history;
-        try {
-          history = await derivWs.getTickHistory(symbol, 500);
-        } catch (err) {
-          toast.error(`No data for ${SYMBOLS[symbol] || symbol}`);
-          continue;
+      // Walk through time intervals — at each step, analyze ALL symbols and pick the best
+      for (let i = 50; i < minLength - config.timeframe && !abortRef.current; i += config.timeframe) {
+        if (balance <= 0) break;
+        if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) break;
+
+        // Analyze all symbols at this time step
+        interface CandidateWithMeta {
+          symbol: string;
+          type: "BUY" | "SELL";
+          score: number;
+          confidence: number;
+          entryPrice: number;
+          exitPrice: number;
+          details: string;
+          pattern: string | null;
         }
 
-        if (!history?.prices || history.prices.length < 50) {
-          toast.warning(`Insufficient data for ${SYMBOLS[symbol] || symbol}`);
-          continue;
+        const candidates: CandidateWithMeta[] = [];
+
+        for (const [symbol, data] of symbolHistories) {
+          const windowPrices = data.prices.slice(0, i + 1);
+          const candidate = analyzeSymbol(windowPrices);
+
+          if (candidate) {
+            const exitIdx = Math.min(i + config.timeframe, data.prices.length - 1);
+            candidates.push({
+              symbol,
+              type: candidate.type,
+              score: candidate.score,
+              confidence: candidate.confidence,
+              entryPrice: data.prices[i],
+              exitPrice: data.prices[exitIdx],
+              details: candidate.details,
+              pattern: candidate.pattern,
+            });
+          }
         }
 
-        const prices = history.prices.map(Number);
-        const times = history.times.map(Number);
-        let tradeAmount = config.initialTradeAmount;
-        let martingaleLevel = 0;
-        let symbolWins = 0;
-        let symbolLosses = 0;
+        if (candidates.length === 0) continue;
 
-        const ema9 = calculateEMA(prices, 9);
-        const ema21 = calculateEMA(prices, 21);
-        const rsi = calculateRSI(prices, 14);
-        const { histogram } = calculateMACD(prices);
+        // Pick the highest confidence candidate
+        candidates.sort((a, b) => b.confidence - a.confidence || b.score - a.score);
+        const best = candidates[0];
 
-        for (let i = 30; i < prices.length - config.timeframe && !abortRef.current; i++) {
-          if (balance <= 0) break;
-          if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) break;
+        const isWin =
+          (best.type === "BUY" && best.exitPrice > best.entryPrice) ||
+          (best.type === "SELL" && best.exitPrice < best.entryPrice);
 
-          const prevEmaDiff = ema9[i - 1] - ema21[i - 1];
-          const currEmaDiff = ema9[i] - ema21[i];
-          const emaCross = (prevEmaDiff <= 0 && currEmaDiff > 0) || (prevEmaDiff >= 0 && currEmaDiff < 0);
-
-          const prevHist = histogram[i - 1] || 0;
-          const currHist = histogram[i] || 0;
-          const macdCross = (prevHist <= 0 && currHist > 0) || (prevHist >= 0 && currHist < 0);
-
-          const rsiExtreme = rsi[i] < 30 || rsi[i] > 70;
-
-          if (!emaCross && !macdCross && !rsiExtreme) continue;
-
-          let score = 0;
-          if (emaCross) score += 30;
-          if (macdCross) score += 25;
-          if (rsiExtreme) score += 20;
-
-          const div = detectDivergence(prices.slice(0, i + 1), rsi.slice(0, i + 1));
-          if (div) score += div.strength * 0.2;
-
-          const type = currEmaDiff > 0 || currHist > 0 || rsi[i] < 40 ? "BUY" : "SELL";
-          const entryPrice = prices[i];
-          const exitPrice = prices[Math.min(i + config.timeframe, prices.length - 1)];
-
-          const isWin =
-            (type === "BUY" && exitPrice > entryPrice) ||
-            (type === "SELL" && exitPrice < entryPrice);
-
-          if (isWin) {
-            balance += tradeAmount * 0.85;
-            symbolWins++;
-            totalWins++;
+        if (isWin) {
+          balance += tradeAmount * 0.85;
+          totalWins++;
+          const stats = symbolStats.get(best.symbol)!;
+          stats.wins++;
+          tradeAmount = config.initialTradeAmount;
+          martingaleLevel = 0;
+        } else {
+          balance -= tradeAmount;
+          totalLosses++;
+          const stats = symbolStats.get(best.symbol)!;
+          stats.losses++;
+          martingaleLevel++;
+          if (martingaleLevel < config.maxMartingaleLevel) {
+            tradeAmount *= config.martingaleMultiplier;
+          } else {
             tradeAmount = config.initialTradeAmount;
             martingaleLevel = 0;
-          } else {
-            balance -= tradeAmount;
-            symbolLosses++;
-            totalLosses++;
-            martingaleLevel++;
-            if (martingaleLevel < config.maxMartingaleLevel) {
-              tradeAmount *= config.martingaleMultiplier;
-            } else {
-              tradeAmount = config.initialTradeAmount;
-              martingaleLevel = 0;
-            }
           }
-
-          if (balance > peakBalance) peakBalance = balance;
-          const drawdown = peakBalance > 0 ? ((peakBalance - balance) / peakBalance) * 100 : 0;
-          if (drawdown > maxDrawdown) maxDrawdown = drawdown;
-
-          allTrades.push({
-            executionTime: new Date(times[i] * 1000).toISOString(),
-            symbol, type, entryPrice, exitPrice,
-            tradeAmount: isWin ? config.initialTradeAmount : tradeAmount / config.martingaleMultiplier,
-            result: isWin ? "WIN" : "LOSS",
-            newBalance: balance,
-            score: Math.round(score),
-            martingaleLevel,
-          });
         }
 
-        const totalSymbolTrades = symbolWins + symbolLosses;
-        if (totalSymbolTrades > 0) {
+        if (balance > peakBalance) peakBalance = balance;
+        const drawdown = peakBalance > 0 ? ((peakBalance - balance) / peakBalance) * 100 : 0;
+        if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+
+        // Use the first symbol's times for timestamps
+        const firstTimes = symbolHistories.values().next().value!.times;
+
+        allTrades.push({
+          executionTime: new Date(firstTimes[i] * 1000).toISOString(),
+          symbol: best.symbol,
+          type: best.type,
+          entryPrice: best.entryPrice,
+          exitPrice: best.exitPrice,
+          tradeAmount: isWin ? config.initialTradeAmount : tradeAmount / config.martingaleMultiplier,
+          result: isWin ? "WIN" : "LOSS",
+          newBalance: balance,
+          score: best.score,
+          confidence: best.confidence,
+          martingaleLevel,
+          pattern: best.pattern,
+          competingSymbols: candidates.length,
+        });
+      }
+
+      // Build per-symbol results
+      const perSymbolResults: any[] = [];
+      for (const [symbol, stats] of symbolStats) {
+        const total = stats.wins + stats.losses;
+        if (total > 0) {
           perSymbolResults.push({
-            symbol, totalTrades: totalSymbolTrades, wins: symbolWins, losses: symbolLosses,
-            winRate: ((symbolWins / totalSymbolTrades) * 100).toFixed(1),
+            symbol,
+            totalTrades: total,
+            wins: stats.wins,
+            losses: stats.losses,
+            winRate: ((stats.wins / total) * 100).toFixed(1),
             finalBalance: balance.toFixed(2),
             netProfit: (balance - config.initialBalance).toFixed(2),
             trades: [],
           });
         }
       }
+
+      // Sort by win rate descending
+      perSymbolResults.sort((a, b) => parseFloat(b.winRate) - parseFloat(a.winRate));
 
       const totalTrades = totalWins + totalLosses;
       const netProfit = balance - config.initialBalance;
@@ -388,7 +439,7 @@ export function useBacktest() {
           profitFactor: totalLosses > 0 ? (totalWins / totalLosses).toFixed(2) : totalWins > 0 ? "∞" : "0",
         },
         results: perSymbolResults,
-        allTrades,
+        allTrades: allTrades.reverse(), // Latest trade first
       };
 
       setResults(backtestResult);
@@ -396,7 +447,7 @@ export function useBacktest() {
       if (totalTrades === 0) {
         toast.warning("No trade signals generated — try different symbols or longer duration");
       } else {
-        toast.success(`Backtest complete: ${totalTrades} trades on real Deriv ticks`);
+        toast.success(`Backtest complete: ${totalTrades} trades across ${symbolHistories.size} symbols (best-confidence selection)`);
       }
 
       // Save to database

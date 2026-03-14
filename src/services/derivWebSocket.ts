@@ -151,9 +151,12 @@ class DerivWebSocketClient {
   }
 
   async subscribeTicks(symbol: string) {
+    if (this.subscriptions.has(symbol)) return; // Already subscribed
     try {
+      this.subscriptions.set(symbol, "pending"); // Mark as pending to prevent duplicates
       await this.send({ ticks: symbol, subscribe: 1 });
     } catch (e) {
+      this.subscriptions.delete(symbol); // Remove on failure
       console.error(`[DerivWS] Failed to subscribe to ${symbol}:`, e);
     }
   }
