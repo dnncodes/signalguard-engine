@@ -73,7 +73,7 @@ export function useSignals() {
   const [error, setError] = useState<string | null>(null);
   const { wsStatus, latestTicks, subscribeTo } = useDerivConnection();
 
-  // Initial load from database
+  // Initial load from database + active symbols
   useEffect(() => {
     const loadInitial = async () => {
       try {
@@ -85,7 +85,7 @@ export function useSignals() {
         setMarketStatus(statusData);
         setError(null);
 
-        // Subscribe to ticks for all known symbols
+        // Subscribe to ticks for default symbols
         const symbolKeys = Object.keys(SYMBOLS);
         subscribeTo(symbolKeys);
       } catch (err) {
@@ -138,13 +138,21 @@ export function useSignals() {
         const idx = updated.findIndex((m) => m.symbol === symbol);
         if (idx >= 0) {
           updated[idx] = { ...updated[idx], lastPrice: tick.quote };
+        } else {
+          // Add newly-seen symbol from WebSocket
+          updated.push({
+            symbol,
+            name: SYMBOLS[symbol] || symbol,
+            candles: 0,
+            lastPrice: tick.quote,
+          });
         }
       }
       return updated;
     });
   }, [latestTicks]);
 
-  return { signals, status: marketStatus, loading, error, wsStatus, refetch: async () => {} };
+  return { signals, status: marketStatus, loading, error, wsStatus };
 }
 
 // ─── useBacktest ─────────────────────────────────────────────
@@ -168,8 +176,9 @@ export function useBacktest() {
 
   const validate = useCallback((config: BacktestConfig): Record<string, string> => {
     const errs: Record<string, string> = {};
+    if (config.symbols.length === 0) errs.symbols = "Select at least one symbol";
     if (config.duration < 1) errs.duration = "At least 1 hour";
-    if (config.initialTradeAmount < 0.1) errs.initialTradeAmount = "Must be ≥ $0.10";
+    if (config.initialTradeAmount < 0.35) errs.initialTradeAmount = "Must be ≥ $0.35";
     if (config.initialBalance < 1) errs.initialBalance = "Balance must be positive";
     if (config.martingaleMultiplier < 1.1 || config.martingaleMultiplier > 5)
       errs.martingaleMultiplier = "1.1–5.0 range";
@@ -189,7 +198,6 @@ export function useBacktest() {
     abortRef.current = false;
 
     try {
-      // Fetch real tick history from Deriv for each symbol
       const allTrades: any[] = [];
       let balance = config.initialBalance;
       let totalWins = 0;
@@ -206,10 +214,14 @@ export function useBacktest() {
           history = await derivWs.getTickHistory(symbol, 500);
         } catch (err) {
           console.error(`Failed to get tick history for ${symbol}:`, err);
+          toast.error(`No data for ${SYMBOLS[symbol] || symbol}`);
           continue;
         }
 
-        if (!history?.prices || history.prices.length < 20) continue;
+        if (!history?.prices || history.prices.length < 20) {
+          toast.warning(`Insufficient data for ${SYMBOLS[symbol] || symbol} (${history?.prices?.length || 0} ticks)`);
+          continue;
+        }
 
         const prices = history.prices.map(Number);
         const times = history.times.map(Number);
@@ -218,7 +230,6 @@ export function useBacktest() {
         let symbolWins = 0;
         let symbolLosses = 0;
 
-        // Simple EMA crossover backtest on historical ticks
         const ema9 = calculateEMA(prices, 9);
         const ema21 = calculateEMA(prices, 21);
 
@@ -226,7 +237,6 @@ export function useBacktest() {
           if (balance <= 0) break;
           if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) break;
 
-          // Signal: EMA 9 crosses above EMA 21 = BUY, below = SELL
           const prevDiff = ema9[i - 1] - ema21[i - 1];
           const currDiff = ema9[i] - ema21[i];
 
@@ -240,7 +250,7 @@ export function useBacktest() {
               (type === "SELL" && exitPrice < entryPrice);
 
             if (isWin) {
-              balance += tradeAmount * 0.85; // ~85% payout
+              balance += tradeAmount * 0.85;
               symbolWins++;
               totalWins++;
               tradeAmount = config.initialTradeAmount;
@@ -268,7 +278,7 @@ export function useBacktest() {
               type,
               entryPrice,
               exitPrice,
-              tradeAmount: isWin ? tradeAmount : tradeAmount / (isWin ? 1 : config.martingaleMultiplier),
+              tradeAmount: isWin ? config.initialTradeAmount : tradeAmount / config.martingaleMultiplier,
               result: isWin ? "WIN" : "LOSS",
               newBalance: balance,
               score: Math.abs(currDiff) * 100,
@@ -324,7 +334,12 @@ export function useBacktest() {
       };
 
       setResults(backtestResult);
-      toast.success("Backtest complete — real Deriv tick data used");
+
+      if (totalTrades === 0) {
+        toast.warning("No trade signals generated — try different symbols or longer duration");
+      } else {
+        toast.success(`Backtest complete: ${totalTrades} trades on real Deriv ticks`);
+      }
 
       // Save to database
       try {
@@ -361,6 +376,7 @@ export function useBacktest() {
   const stop = useCallback(() => {
     abortRef.current = true;
     setIsRunning(false);
+    toast.info("Backtest stopped");
   }, []);
 
   const clear = useCallback(() => {
@@ -388,7 +404,7 @@ export function useLiveAutomation() {
       setBalance(typeof data.balance === "number" ? data.balance : null);
       setCurrency(data.currency || "USD");
     } catch (err) {
-      handleApiError(err, "Balance fetch failed");
+      console.warn("Balance fetch failed (will retry on account switch):", err);
       setBalance(null);
       setCurrency("USD");
     } finally {
@@ -407,7 +423,7 @@ export function useLiveAutomation() {
       const errs: Record<string, string> = {};
       if (config.duration < 1) errs.duration = "Must be at least 1 hour";
       if (config.profitTarget < 0) errs.profitTarget = "Cannot be negative";
-      if (config.initialTradeAmount < 0.1) errs.initialTradeAmount = "Must be ≥ $0.10";
+      if (config.initialTradeAmount < 0.35) errs.initialTradeAmount = "Must be ≥ $0.35";
       if (config.martingaleMultiplier < 1.1 || config.martingaleMultiplier > 5)
         errs.martingaleMultiplier = "1.1–5.0 range";
       if (config.maxMartingaleLevel < 1 || config.maxMartingaleLevel > 10)
@@ -482,6 +498,11 @@ export function useTestTrade() {
       symbol: string;
       durationMinutes: number;
     }) => {
+      if (params.amount < 0.35) {
+        toast.error("Minimum trade amount is $0.35");
+        return;
+      }
+
       setLoading(true);
       setResult(null);
       try {
@@ -491,7 +512,7 @@ export function useTestTrade() {
         });
         setResult(data);
         toast.success(
-          `Trade placed! Contract #${data.contractId} — waiting for result...`
+          `Trade placed! Contract #${data.contractId} — ${data.symbol} ${data.type}`
         );
       } catch (err) {
         handleApiError(err, "Test trade failed");
@@ -505,13 +526,42 @@ export function useTestTrade() {
   return { loading, result, execute };
 }
 
+// ─── useTradeHistory ─────────────────────────────────────────
+
+export function useTradeHistory() {
+  const [trades, setTrades] = useState<any[]>([]);
+  const [backtests, setBacktests] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [tradeData, backtestData] = await Promise.all([
+        api.fetchTradeHistory(100),
+        api.fetchBacktestSessions(20),
+      ]);
+      setTrades(tradeData);
+      setBacktests(backtestData);
+    } catch (err) {
+      handleApiError(err, "Failed to load history");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return { trades, backtests, loading, reload: load };
+}
+
 // ─── Utility: EMA calculation ────────────────────────────────
 
 function calculateEMA(prices: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const ema: number[] = new Array(prices.length).fill(0);
 
-  // Initialize with SMA for the first `period` values
   let sum = 0;
   for (let i = 0; i < period && i < prices.length; i++) {
     sum += prices[i];

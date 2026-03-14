@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import EngineDashboard from "./pages/EngineDashboard";
+import TradeHistory from "./pages/TradeHistory";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -18,6 +19,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<EngineDashboard />} />
+            <Route path="/history" element={<TradeHistory />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
