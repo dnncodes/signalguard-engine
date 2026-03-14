@@ -97,6 +97,8 @@ export default function EngineDashboard() {
             ) : (
               <SignalFeed signals={signals} />
             )}
+
+            <SymbolLeaderboard />
           </div>
         </div>
       </main>
