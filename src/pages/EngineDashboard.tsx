@@ -89,6 +89,7 @@ export default function EngineDashboard() {
           <div className="xl:col-span-9 space-y-8">
             <BacktestResults results={backtest.results} onClear={backtest.clear} />
             <LiveResults status={live.status} />
+            <EquityCurve status={live.status} />
 
             {loading ? (
               <div className="h-64 flex flex-col items-center justify-center border border-dashed border-engine-border rounded-lg text-engine-text-dim">

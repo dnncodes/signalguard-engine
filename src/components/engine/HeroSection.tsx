@@ -151,7 +151,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
         </div>
 
         {/* Stats grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
           <StatCard
             icon={<Activity size={13} />}
             label="Markets"
@@ -170,7 +170,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
             icon={<BarChart3 size={13} />}
             label="Signals"
             value={`${stats.buySignals}B / ${stats.sellSignals}S`}
-            sub={`Avg: ${stats.avgScore}`}
+            sub={`Avg score: ${stats.avgScore}`}
             accent="neutral"
           />
           <StatCard
@@ -179,13 +179,6 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
             value="5 min"
             sub="Strict cycle"
             accent="buy"
-          />
-          <StatCard
-            icon={<Shield size={13} />}
-            label="Indicators"
-            value="6"
-            sub="EMA RSI MACD ATR"
-            accent="neutral"
           />
           <StatCard
             icon={<Zap size={13} />}
