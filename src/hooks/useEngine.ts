@@ -5,6 +5,8 @@ import {
   type Signal,
   type MarketStatus,
   type BacktestResult,
+  type BacktestTrade,
+  type BacktestSymbolResult,
   type LiveAutomationStatus,
   type LiveTrade,
   type TestTradeResult,
