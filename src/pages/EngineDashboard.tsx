@@ -12,6 +12,7 @@ import { BacktestResults } from "@/components/engine/BacktestResults";
 import { LiveResults } from "@/components/engine/LiveResults";
 import { EngineFooter } from "@/components/engine/EngineFooter";
 import { SymbolLeaderboard } from "@/components/engine/SymbolLeaderboard";
+import { EquityCurve } from "@/components/engine/EquityCurve";
 import {
   useSignals,
   useBacktest,

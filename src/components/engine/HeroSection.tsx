@@ -76,9 +76,9 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
               <span className="text-signal-buy"> Command Center</span>
             </h2>
             <p className="text-[11px] text-engine-text-muted mt-2 max-w-xl leading-relaxed font-mono">
-              Monitoring <span className="text-engine-text-secondary font-bold">{stats.totalMarkets}</span> indices ·
-              EMA · RSI · MACD · ATR · Divergence · Engulfing ·
-              Best signal every <span className="text-signal-buy font-bold">5 min</span>
+              Advanced algorithmic trading engine for Volatility Indices. Real-time Smart Money Concepts &amp; technical analysis across{" "}
+              <span className="text-engine-text-secondary font-bold">{stats.totalMarkets} indices</span> — best signal every{" "}
+              <span className="text-signal-buy font-bold">5 min</span>.
             </p>
           </div>
 
