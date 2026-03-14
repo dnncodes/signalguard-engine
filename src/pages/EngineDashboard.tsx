@@ -10,6 +10,7 @@ import { SignalFeed } from "@/components/engine/SignalFeed";
 import { BacktestResults } from "@/components/engine/BacktestResults";
 import { LiveResults } from "@/components/engine/LiveResults";
 import { EngineFooter } from "@/components/engine/EngineFooter";
+import { SymbolLeaderboard } from "@/components/engine/SymbolLeaderboard";
 import {
   useSignals,
   useBacktest,
