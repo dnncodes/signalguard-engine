@@ -808,6 +808,7 @@ export function useTestTrade() {
       amount: number;
       symbol: string;
       durationMinutes: number;
+      direction?: "BUY" | "SELL";
     }) => {
       if (params.amount < 0.35) {
         toast.error("Minimum trade amount is $0.35");
