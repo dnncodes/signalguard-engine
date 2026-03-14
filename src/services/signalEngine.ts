@@ -142,8 +142,8 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     100
   );
 
-  // Only generate if score ≥ 20
-  if (totalScore < 20) return null;
+  // Only generate if score ≥ 25 for higher quality signals
+  if (totalScore < 25) return null;
 
   const trendStrength = Math.abs(buySignals - sellSignals) / Math.max(buySignals + sellSignals, 1) * 100;
 
@@ -263,49 +263,10 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      // Fallback: generate a low-confidence trend-following signal
-      for (const symbol of this.activeSymbols) {
-        try {
-          const history = await derivWs.getTickHistory(symbol, 100);
-          if (!history?.prices || history.prices.length < 30) continue;
-          const prices = history.prices.map(Number);
-          const ema9 = calculateEMA(prices, 9);
-          const ema21 = calculateEMA(prices, 21);
-          const last = prices.length - 1;
-          const emaDiff = ema9[last] - ema21[last];
-
-          candidates.push({
-            symbol,
-            type: emaDiff > 0 ? "BUY" : "SELL",
-            price: prices[last],
-            score: 15,
-            confidence: 15,
-            details: `Trend following: EMA ${emaDiff > 0 ? "↑ bullish" : "↓ bearish"} (low confidence)`,
-            logic: "Weak Trend | Low Data",
-            pattern: null,
-            metrics: {
-              ema9: ema9[last],
-              ema21: ema21[last],
-              ema_cross: emaDiff,
-              ema_gap_pct: 0,
-              ema_slope: 0,
-              rsi: 50,
-              rsi_signal: "unknown",
-              macd_histogram: 0,
-              macd_cross: "none",
-              atr: 0,
-              divergence: null,
-              divergence_strength: 0,
-              engulfing: null,
-              engulfing_strength: 0,
-              trend_strength: 30,
-            },
-          });
-          break;
-        } catch {
-          continue;
-        }
-      }
+      // No candidates passed the threshold — skip this cycle entirely
+      // Better to skip than send low-quality signals
+      console.log("[SignalEngine] No high-confidence signals this cycle — skipping");
+      return null;
     }
 
     // Sort by confidence descending, pick the best

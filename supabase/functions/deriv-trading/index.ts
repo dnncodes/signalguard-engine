@@ -129,43 +129,74 @@ function formatSignalTelegram(body: any): string {
   const now = new Date();
   const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
 
+  // Confidence bar visualization
+  const conf = Number(confidence || score || 0);
+  const barLen = 10;
+  const filled = Math.round((conf / 100) * barLen);
+  const confBar = "█".repeat(filled) + "░".repeat(barLen - filled);
+
+  // RSI zone label
+  let rsiZone = "";
+  if (metrics?.rsi != null) {
+    const rsi = Number(metrics.rsi);
+    if (rsi < 30) rsiZone = " ⚠️ OVERSOLD";
+    else if (rsi > 70) rsiZone = " ⚠️ OVERBOUGHT";
+    else if (rsi < 40) rsiZone = " 🔽 Approaching OS";
+    else if (rsi > 60) rsiZone = " 🔼 Approaching OB";
+  }
+
+  // Trend strength label
+  let trendLabel = "";
+  if (metrics?.trend_strength != null) {
+    const ts = Number(metrics.trend_strength);
+    if (ts > 60) trendLabel = "🔥 STRONG";
+    else if (ts > 30) trendLabel = "⚡ MODERATE";
+    else trendLabel = "〰️ WEAK";
+  }
+
   const lines: string[] = [
-    `${emoji} <b>Confidence: ${confidence || score || 0}%</b>`,
+    `${emoji} <b>Confidence: ${conf.toFixed(1)}%</b>`,
+    `<code>${confBar}</code>`,
     ``,
     `⚡ <b>ACTION: ${action}</b>`,
-    `📊 Symbol: ${name}`,
-    `💰 Entry: <code>${Number(price).toFixed(2)}</code>`,
-    `⏰ Time: ${time}`,
+    `📊 <b>Symbol:</b> ${name}`,
+    `💰 <b>Entry:</b> <code>${Number(price).toFixed(2)}</code>`,
+    `⏰ <b>Time:</b> ${time}`,
   ];
 
-  // Pattern line
   if (pattern) {
-    lines.push(``);
-    lines.push(`🔥 <b>${pattern}</b>`);
+    lines.push(``, `🔥 <b>${pattern}</b>`);
   }
 
-  // Technical Metrics
-  lines.push(``);
-  lines.push(`📐 <b>Technical Metrics:</b>`);
+  lines.push(``, `📐 <b>Technical Metrics:</b>`);
 
   if (metrics) {
-    if (metrics.ema9 != null) lines.push(`EMA 9: <code>${Number(metrics.ema9).toFixed(2)}</code>`);
-    if (metrics.ema21 != null) lines.push(`EMA 21: <code>${Number(metrics.ema21).toFixed(2)}</code>`);
-    if (metrics.rsi != null) lines.push(`RSI: <code>${Number(metrics.rsi).toFixed(1)}</code>`);
-    if (metrics.atr != null) lines.push(`ATR: <code>${Number(metrics.atr).toFixed(4)}</code>`);
+    if (metrics.ema9 != null && metrics.ema21 != null) {
+      const emaDiff = Number(metrics.ema9) - Number(metrics.ema21);
+      const emaDir = emaDiff > 0 ? "↑" : "↓";
+      lines.push(`EMA 9/21: <code>${Number(metrics.ema9).toFixed(2)} / ${Number(metrics.ema21).toFixed(2)}</code> ${emaDir}`);
+    }
+    if (metrics.rsi != null) lines.push(`RSI (14): <code>${Number(metrics.rsi).toFixed(1)}</code>${rsiZone}`);
+    if (metrics.macd_histogram != null) {
+      const macdDir = Number(metrics.macd_histogram) > 0 ? "↑" : "↓";
+      lines.push(`MACD: <code>${Number(metrics.macd_histogram).toFixed(4)}</code> ${macdDir} (${metrics.macd_cross || "—"})`);
+    }
+    if (metrics.atr != null) lines.push(`ATR (14): <code>${Number(metrics.atr).toFixed(4)}</code>`);
     if (metrics.ema_gap_pct != null) lines.push(`EMA Gap: <code>${Number(metrics.ema_gap_pct).toFixed(4)}%</code>`);
     if (metrics.ema_slope != null) lines.push(`Slope: <code>${Number(metrics.ema_slope).toFixed(6)}</code>`);
-    if (metrics.divergence) lines.push(`Divergence: <code>${metrics.divergence}</code>`);
-    if (metrics.engulfing) lines.push(`Pattern: <code>${metrics.engulfing} engulfing</code>`);
+    if (metrics.divergence) lines.push(`📉 Divergence: <code>${metrics.divergence}</code> (str: ${Number(metrics.divergence_strength || 0).toFixed(0)})`);
+    if (metrics.engulfing) lines.push(`🕯 Engulfing: <code>${metrics.engulfing}</code> (str: ${Number(metrics.engulfing_strength || 0).toFixed(0)})`);
+    if (trendLabel) lines.push(`📊 Trend: ${trendLabel} (${Number(metrics.trend_strength).toFixed(0)}%)`);
   }
 
-  // Logic line
-  lines.push(``);
-  lines.push(`─────────────────`);
-  lines.push(`💡 <b>Logic:</b> ${logic || details || "—"}`);
-  lines.push(``);
-  lines.push(`📌 <i>High-probability 5-min scalping setup.</i>`);
-  lines.push(`🤖 <i>DNN Deriv Engine v3.0</i>`);
+  lines.push(
+    ``,
+    `─────────────────`,
+    `💡 <b>Logic:</b> ${logic || details || "—"}`,
+    ``,
+    `📌 <i>5-min scalping | Best of ${Object.keys(SYMBOL_NAMES).length} markets</i>`,
+    `🤖 <i>DNN Deriv Engine v3.0</i>`
+  );
 
   return lines.join("\n");
 }
