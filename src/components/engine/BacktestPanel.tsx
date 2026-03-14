@@ -61,20 +61,24 @@ export function BacktestPanel({
         {/* Asset Selection */}
         <div className="space-y-1.5">
           <label className="engine-label">Asset Selection (Multi)</label>
+          {errors.symbols && <p className="text-destructive text-[8px] font-mono">{errors.symbols}</p>}
           <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto p-2 bg-engine-bg rounded-md border border-engine-border-hover scrollbar-thin scrollbar-thumb-engine-text-dim">
-            {status.map((s) => (
+            {(status.length > 0
+              ? status.map((s) => ({ key: s.symbol, name: s.name }))
+              : Object.entries(SYMBOLS).map(([key, name]) => ({ key, name }))
+            ).map((s) => (
               <label
-                key={s.symbol}
+                key={s.key}
                 className="flex items-center gap-2 p-2 hover:bg-engine-surface-hover rounded-md cursor-pointer transition-colors"
               >
                 <input
                   type="checkbox"
-                  checked={symbols.includes(s.symbol)}
+                  checked={symbols.includes(s.key)}
                   onChange={(e) => {
                     setSymbols(
                       e.target.checked
-                        ? [...symbols, s.symbol]
-                        : symbols.filter((sym) => sym !== s.symbol)
+                        ? [...symbols, s.key]
+                        : symbols.filter((sym) => sym !== s.key)
                     );
                   }}
                   className="w-3 h-3 accent-signal-buy"
