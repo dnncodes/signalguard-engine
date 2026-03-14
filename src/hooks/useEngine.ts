@@ -435,7 +435,7 @@ export function useBacktest() {
           newBalance: balance,
           score: best.score,
           confidence: best.confidence,
-          martingaleLevel,
+          martingaleLevel: tradePlacedAtLevel,
           pattern: best.pattern,
           competingSymbols: candidates.length,
         });
