@@ -563,12 +563,14 @@ export function useLiveAutomation() {
   const [accountType, setAccountType] = useState<"demo" | "live">("demo");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const pendingContractsRef = useRef<Map<number, { symbol: string; type: string; amount: number; openedAt: number }>>(new Map());
+  const pendingContractsRef = useRef<Map<number, { symbol: string; type: string; amount: number; martingaleLevel: number; openedAt: number }>>(new Map());
   const settleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const configRef = useRef<{ martingaleMultiplier: number; maxMartingaleLevel: number; initialTradeAmount: number; profitTarget: number } | null>(null);
-  const martingaleRef = useRef({ level: 0, amount: 0 });
+  // Martingale state: consecutiveLosses tracks the chain, nextAmount is pre-computed
+  const martingaleRef = useRef({ consecutiveLosses: 0, nextAmount: 0 });
+  const settlingRef = useRef(false); // Prevent concurrent settlement processing
   const realtimeChannelRef = useRef<any>(null);
 
   const loadBalance = useCallback(async (acct: "demo" | "live") => {
