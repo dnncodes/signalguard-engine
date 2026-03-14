@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { History, RefreshCw } from "lucide-react";
-import type { MarketStatus } from "@/types/engine";
+import { SYMBOLS, type MarketStatus } from "@/types/engine";
 import type { BacktestConfig } from "@/hooks/useEngine";
 
 interface BacktestPanelProps {
