@@ -161,89 +161,6 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
             </div>
           </div>
 
-          {/* Trade history */}
-          {results.allTrades && results.allTrades.length > 0 && (
-            <div className="p-6 engine-panel rounded-lg">
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="w-6 h-6 bg-signal-buy-bg rounded-sm flex items-center justify-center">
-                    <History size={14} className="text-signal-buy" />
-                  </div>
-                  <h3 className="text-sm font-bold text-engine-text-secondary uppercase tracking-widest">
-                    Complete Trade History
-                  </h3>
-                </div>
-                <div className="text-[9px] font-mono text-engine-text-muted">
-                  {results.allTrades.length} Total Trades
-                </div>
-              </div>
-
-              <div className="overflow-x-auto rounded-md border border-engine-border bg-engine-bg max-h-96 overflow-y-auto">
-                <table className="w-full text-left text-[9px] font-mono">
-                  <thead className="sticky top-0 bg-engine-bg/90 backdrop-blur-sm">
-                    <tr className="text-engine-text-dim border-b border-engine-border uppercase tracking-tighter">
-                      <th className="px-3 py-2 font-medium">Time</th>
-                      <th className="px-3 py-2 font-medium">Symbol</th>
-                      <th className="px-3 py-2 font-medium">Type</th>
-                      <th className="px-3 py-2 font-medium">Conf.</th>
-                      <th className="px-3 py-2 font-medium">Amount</th>
-                      <th className="px-3 py-2 font-medium">Entry</th>
-                      <th className="px-3 py-2 font-medium">Exit</th>
-                      <th className="px-3 py-2 font-medium">Result</th>
-                      <th className="px-3 py-2 font-medium">Balance</th>
-                      <th className="px-3 py-2 font-medium">Pattern</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-engine-border">
-                    {results.allTrades.map((trade, i) => (
-                      <tr key={i} className="hover:bg-engine-surface transition-colors">
-                        <td className="px-3 py-2 text-engine-text-muted">
-                          {new Date(trade.executionTime).toLocaleString([], {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            second: "2-digit",
-                          })}
-                        </td>
-                        <td className="px-3 py-2 text-engine-text-secondary font-bold">{trade.symbol}</td>
-                        <td className="px-3 py-2">
-                          <span className={`flex items-center gap-1 ${trade.type === "BUY" ? "text-signal-buy" : "text-signal-sell"}`}>
-                            <div className={`w-2 h-2 rounded-full ${trade.type === "BUY" ? "bg-signal-buy" : "bg-signal-sell"}`} />
-                            {trade.type}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2">
-                          <span className={`font-bold ${
-                            (trade.confidence || trade.score || 0) >= 60 ? "text-signal-buy"
-                            : (trade.confidence || trade.score || 0) >= 35 ? "text-warning"
-                            : "text-engine-text-muted"
-                          }`}>
-                            {trade.confidence || trade.score || 0}%
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-engine-text-secondary">${trade.tradeAmount.toFixed(2)}</td>
-                        <td className="px-3 py-2 text-engine-text-secondary">{trade.entryPrice.toFixed(5)}</td>
-                        <td className="px-3 py-2 text-engine-text-secondary">{trade.exitPrice.toFixed(5)}</td>
-                        <td className="px-3 py-2 font-bold">
-                          <span className={trade.result === "WIN" ? "text-signal-buy" : "text-signal-sell"}>
-                            {trade.result}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-right font-bold text-engine-text-primary">
-                          ${trade.newBalance.toFixed(2)}
-                        </td>
-                        <td className="px-3 py-2 text-[8px] text-engine-text-muted max-w-[120px] truncate" title={trade.pattern || "—"}>
-                          {trade.pattern || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
           {/* Per-symbol breakdown */}
           {results.results.length > 0 && (
             <div className="p-6 engine-panel rounded-lg">
@@ -285,6 +202,93 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Chronological Trade Log — oldest first */}
+          {results.allTrades && results.allTrades.length > 0 && (
+            <div className="p-6 engine-panel rounded-lg">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-6 h-6 bg-signal-buy-bg rounded-sm flex items-center justify-center">
+                    <History size={14} className="text-signal-buy" />
+                  </div>
+                  <h3 className="text-sm font-bold text-engine-text-secondary uppercase tracking-widest">
+                    Trade Log (Chronological)
+                  </h3>
+                </div>
+                <div className="text-[9px] font-mono text-engine-text-muted">
+                  {results.allTrades.length} / {Math.floor(results.duration * 60 / results.timeframe)} expected slots
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-md border border-engine-border bg-engine-bg max-h-[500px] overflow-y-auto">
+                <table className="w-full text-left text-[9px] font-mono">
+                  <thead className="sticky top-0 bg-engine-bg/90 backdrop-blur-sm">
+                    <tr className="text-engine-text-dim border-b border-engine-border uppercase tracking-tighter">
+                      <th className="px-3 py-2 font-medium">#</th>
+                      <th className="px-3 py-2 font-medium">Time</th>
+                      <th className="px-3 py-2 font-medium">Symbol</th>
+                      <th className="px-3 py-2 font-medium">Type</th>
+                      <th className="px-3 py-2 font-medium">Conf.</th>
+                      <th className="px-3 py-2 font-medium">Amount</th>
+                      <th className="px-3 py-2 font-medium">Entry</th>
+                      <th className="px-3 py-2 font-medium">Exit</th>
+                      <th className="px-3 py-2 font-medium">Result</th>
+                      <th className="px-3 py-2 font-medium">Balance</th>
+                      <th className="px-3 py-2 font-medium">M.Level</th>
+                      <th className="px-3 py-2 font-medium">Pattern</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-engine-border">
+                    {results.allTrades.map((trade, i) => (
+                      <tr key={i} className="hover:bg-engine-surface transition-colors">
+                        <td className="px-3 py-2 text-engine-text-dim">{i + 1}</td>
+                        <td className="px-3 py-2 text-engine-text-muted">
+                          {new Date(trade.executionTime).toLocaleString([], {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                          })}
+                        </td>
+                        <td className="px-3 py-2 text-engine-text-secondary font-bold">{trade.symbol}</td>
+                        <td className="px-3 py-2">
+                          <span className={`flex items-center gap-1 ${trade.type === "BUY" ? "text-signal-buy" : "text-signal-sell"}`}>
+                            <div className={`w-2 h-2 rounded-full ${trade.type === "BUY" ? "bg-signal-buy" : "bg-signal-sell"}`} />
+                            {trade.type}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`font-bold ${
+                            (trade.confidence || trade.score || 0) >= 60 ? "text-signal-buy"
+                            : (trade.confidence || trade.score || 0) >= 35 ? "text-warning"
+                            : "text-engine-text-muted"
+                          }`}>
+                            {(trade.confidence || trade.score || 0).toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-engine-text-secondary">${trade.tradeAmount.toFixed(2)}</td>
+                        <td className="px-3 py-2 text-engine-text-secondary">{trade.entryPrice.toFixed(5)}</td>
+                        <td className="px-3 py-2 text-engine-text-secondary">{trade.exitPrice.toFixed(5)}</td>
+                        <td className="px-3 py-2 font-bold">
+                          <span className={trade.result === "WIN" ? "text-signal-buy" : "text-signal-sell"}>
+                            {trade.result}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right font-bold text-engine-text-primary">
+                          ${trade.newBalance.toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-engine-text-muted">{trade.martingaleLevel}</td>
+                        <td className="px-3 py-2 text-[8px] text-engine-text-muted max-w-[120px] truncate" title={trade.pattern || "—"}>
+                          {trade.pattern || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
