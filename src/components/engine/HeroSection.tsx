@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { Activity, BarChart3, TrendingUp, Zap, Target, Shield, Clock } from "lucide-react";
+import { Activity, BarChart3, TrendingUp, Zap, Target, Clock } from "lucide-react";
 import type { MarketStatus, Signal } from "@/types/engine";
 import { SYMBOLS } from "@/types/engine";
 
