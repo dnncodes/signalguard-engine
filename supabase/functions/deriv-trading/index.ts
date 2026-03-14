@@ -71,6 +71,48 @@ function errorResponse(message: string, status = 500) {
   return jsonResponse({ error: message }, status);
 }
 
+// Telegram bot helper
+async function sendTelegramMessage(text: string): Promise<void> {
+  const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
+  const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_CHAT_ID");
+
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.warn("[Telegram] Bot token or chat ID not configured, skipping");
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("[Telegram] Send failed:", err);
+    }
+  } catch (err) {
+    console.error("[Telegram] Network error:", err);
+  }
+}
+
+// Symbol display names
+const SYMBOL_NAMES: Record<string, string> = {
+  "1HZ10V": "Vol 10 (1s)", "R_10": "Vol 10", "1HZ15V": "Vol 15 (1s)",
+  "1HZ25V": "Vol 25 (1s)", "R_25": "Vol 25", "1HZ30V": "Vol 30 (1s)",
+  "1HZ50V": "Vol 50 (1s)", "R_50": "Vol 50", "1HZ75V": "Vol 75 (1s)",
+  "R_75": "Vol 75", "1HZ90V": "Vol 90 (1s)", "1HZ100V": "Vol 100 (1s)",
+  "R_100": "Vol 100", "BOOM500": "Boom 500", "BOOM1000": "Boom 1000",
+  "CRASH500": "Crash 500", "CRASH1000": "Crash 1000",
+  "JD10": "Jump 10", "JD25": "Jump 25", "JD50": "Jump 50",
+};
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -85,13 +127,38 @@ serve(async (req: Request) => {
     }
 
     const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN");
-    if (!DERIV_TOKEN) {
+    if (!DERIV_TOKEN && action !== "telegram_signal") {
       return errorResponse("DERIV_API_TOKEN not configured", 500);
     }
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // ── TELEGRAM SIGNAL (no Deriv WS needed) ──
+    if (action === "telegram_signal" && req.method === "POST") {
+      const body = await req.json();
+      const { symbol, type, price, score, details } = body;
+      const name = SYMBOL_NAMES[symbol] || symbol;
+      const emoji = type === "BUY" ? "🟢" : "🔴";
+      const arrow = type === "BUY" ? "⬆️" : "⬇️";
+
+      const message = [
+        `${emoji} <b>${type} SIGNAL</b> ${arrow}`,
+        ``,
+        `📊 <b>${name}</b> (${symbol})`,
+        `💰 Price: <code>${Number(price).toFixed(2)}</code>`,
+        `🎯 Score: <b>${score || 0}/100</b>`,
+        ``,
+        `📝 ${details}`,
+        ``,
+        `⏰ ${new Date().toLocaleTimeString("en-US", { hour12: false })} UTC`,
+        `🤖 <i>DNN Deriv Engine v2.1</i>`,
+      ].join("\n");
+
+      await sendTelegramMessage(message);
+      return jsonResponse({ success: true, message: "Signal sent to Telegram" });
+    }
 
     let ws: WebSocket;
     try {
@@ -130,7 +197,6 @@ serve(async (req: Request) => {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
-        // Always use 5 minutes for automated trades
         const dur = duration || 5;
         const durUnit = duration_unit || "m";
 
@@ -200,7 +266,6 @@ serve(async (req: Request) => {
           return errorResponse("Missing contract_id", 400);
         }
 
-        // Check contract status
         const statusRes = await derivRequest(ws, {
           proposal_open_contract: 1,
           contract_id,
@@ -214,12 +279,12 @@ serve(async (req: Request) => {
         const isExpired = contract.is_expired || contract.is_settleable;
         const isOpen = !isExpired && !contract.is_sold;
 
-        // If still open and past expiry, try to sell at market
+        // If still open and past expiry, try to sell
         if (isOpen && contract.is_valid_to_sell) {
           try {
             const sellRes = await derivRequest(ws, {
               sell: contract_id,
-              price: 0, // Market price
+              price: 0,
             });
             const sellData = sellRes.sell;
             const profit = sellData.sold_for - contract.buy_price;
@@ -236,6 +301,16 @@ serve(async (req: Request) => {
 
             console.log(`[deriv-trading] Settled ${contract_id}: sold for ${sellData.sold_for} | Profit: ${profit}`);
 
+            // Send Telegram notification for settled trade
+            const name = SYMBOL_NAMES[contract.underlying] || contract.underlying;
+            const resultEmoji = profit >= 0 ? "✅" : "❌";
+            await sendTelegramMessage(
+              `${resultEmoji} <b>Trade Settled</b>\n\n` +
+              `📊 ${name}\n` +
+              `💰 Profit: <code>$${profit.toFixed(2)}</code>\n` +
+              `📋 Contract: #${contract_id}`
+            );
+
             return jsonResponse({
               settled: true,
               sold_for: sellData.sold_for,
@@ -248,7 +323,7 @@ serve(async (req: Request) => {
           }
         }
 
-        // If already expired/settled, just update the DB
+        // Already expired/settled
         if (isExpired || contract.is_sold) {
           const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
           const result = profit >= 0 ? "WIN" : "LOSS";
@@ -265,6 +340,15 @@ serve(async (req: Request) => {
 
           console.log(`[deriv-trading] Contract ${contract_id} already settled: ${result} | Profit: ${profit}`);
 
+          const name = SYMBOL_NAMES[contract.underlying] || contract.underlying;
+          const resultEmoji = profit >= 0 ? "✅" : "❌";
+          await sendTelegramMessage(
+            `${resultEmoji} <b>Trade Settled</b>\n\n` +
+            `📊 ${name}\n` +
+            `💰 Profit: <code>$${profit.toFixed(2)}</code>\n` +
+            `📋 Contract: #${contract_id}`
+          );
+
           return jsonResponse({
             settled: true,
             profit,
@@ -273,7 +357,7 @@ serve(async (req: Request) => {
           });
         }
 
-        // Still running, not sellable yet
+        // Still running
         return jsonResponse({
           settled: false,
           status: "OPEN",

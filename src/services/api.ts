@@ -5,7 +5,9 @@ import {
   type MarketStatus,
   type TestTradeResult,
   type BalanceResponse,
+  SYMBOLS,
 } from "@/types/engine";
+import type { SignalCandidate } from "./signalEngine";
 
 // ─── Edge Function Caller ────────────────────────────────────
 
@@ -77,12 +79,14 @@ export async function fetchSignals(): Promise<Signal[]> {
 export async function fetchMarketStatus(): Promise<MarketStatus[]> {
   try {
     const symbols = await callEdgeFunction<any[]>("active_symbols");
-    return symbols.map((s: any) => ({
-      symbol: s.symbol,
-      name: s.display_name || s.symbol,
-      candles: 0,
-      lastPrice: s.spot || 0,
-    }));
+    return symbols
+      .filter((s: any) => SYMBOLS[s.symbol])
+      .map((s: any) => ({
+        symbol: s.symbol,
+        name: s.display_name || SYMBOLS[s.symbol] || s.symbol,
+        candles: 0,
+        lastPrice: s.spot || 0,
+      }));
   } catch {
     return [];
   }
@@ -185,6 +189,25 @@ export async function executeTestTrade(params: {
     durationMinutes: params.durationMinutes,
     currency: "USD",
   };
+}
+
+// ─── Telegram Signal Push ────────────────────────────────────
+
+export async function sendTelegramSignal(signal: SignalCandidate): Promise<void> {
+  try {
+    await callEdgeFunction("telegram_signal", {
+      method: "POST",
+      body: {
+        symbol: signal.symbol,
+        type: signal.type,
+        price: signal.price,
+        score: signal.score,
+        details: signal.details,
+      },
+    });
+  } catch (err) {
+    console.warn("[Telegram] Signal push failed:", err);
+  }
 }
 
 // ─── Database operations ─────────────────────────────────────
