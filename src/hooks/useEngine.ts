@@ -784,21 +784,3 @@ export function useTradeHistory() {
   return { trades, backtests, loading, reload: load };
 }
 
-// ─── Utility: EMA calculation ────────────────────────────────
-
-function calculateEMA(prices: number[], period: number): number[] {
-  const k = 2 / (period + 1);
-  const ema: number[] = new Array(prices.length).fill(0);
-
-  let sum = 0;
-  for (let i = 0; i < period && i < prices.length; i++) {
-    sum += prices[i];
-  }
-  ema[period - 1] = sum / period;
-
-  for (let i = period; i < prices.length; i++) {
-    ema[i] = prices[i] * k + ema[i - 1] * (1 - k);
-  }
-
-  return ema;
-}
