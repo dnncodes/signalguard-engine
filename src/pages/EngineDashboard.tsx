@@ -17,14 +17,14 @@ import {
 } from "@/hooks/useEngine";
 
 export default function EngineDashboard() {
-  const { signals, status, loading, error: dataError } = useSignals();
+  const { signals, status, loading, error: dataError, wsStatus } = useSignals();
   const backtest = useBacktest();
   const live = useLiveAutomation();
   const testTrade = useTestTrade();
 
   return (
     <div className="min-h-screen bg-engine-bg text-engine-text-primary font-sans selection:bg-signal-buy/30">
-      <Header marketCount={status.length} />
+      <Header marketCount={status.length} wsStatus={wsStatus} />
       <MarketTicker status={status} />
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
@@ -66,7 +66,7 @@ export default function EngineDashboard() {
               result={testTrade.result}
               onExecute={testTrade.execute}
             />
-            <SystemHealth />
+            <SystemHealth wsStatus={wsStatus} />
           </div>
 
           {/* Main content */}
@@ -78,7 +78,7 @@ export default function EngineDashboard() {
               <div className="h-64 flex flex-col items-center justify-center border border-dashed border-engine-border rounded-lg text-engine-text-dim">
                 <Layers size={48} className="mb-4 opacity-10 animate-pulse" />
                 <p className="text-xs uppercase tracking-widest font-bold font-mono">
-                  Connecting to signal engine...
+                  Connecting to Deriv WebSocket...
                 </p>
               </div>
             ) : (
