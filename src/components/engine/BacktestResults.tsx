@@ -185,11 +185,13 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                       <th className="px-3 py-2 font-medium">Time</th>
                       <th className="px-3 py-2 font-medium">Symbol</th>
                       <th className="px-3 py-2 font-medium">Type</th>
+                      <th className="px-3 py-2 font-medium">Conf.</th>
                       <th className="px-3 py-2 font-medium">Amount</th>
                       <th className="px-3 py-2 font-medium">Entry</th>
                       <th className="px-3 py-2 font-medium">Exit</th>
                       <th className="px-3 py-2 font-medium">Result</th>
                       <th className="px-3 py-2 font-medium">Balance</th>
+                      <th className="px-3 py-2 font-medium">Pattern</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-engine-border">
@@ -211,6 +213,15 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                             {trade.type}
                           </span>
                         </td>
+                        <td className="px-3 py-2">
+                          <span className={`font-bold ${
+                            (trade.confidence || trade.score || 0) >= 60 ? "text-signal-buy"
+                            : (trade.confidence || trade.score || 0) >= 35 ? "text-warning"
+                            : "text-engine-text-muted"
+                          }`}>
+                            {trade.confidence || trade.score || 0}%
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-engine-text-secondary">${trade.tradeAmount.toFixed(2)}</td>
                         <td className="px-3 py-2 text-engine-text-secondary">{trade.entryPrice.toFixed(5)}</td>
                         <td className="px-3 py-2 text-engine-text-secondary">{trade.exitPrice.toFixed(5)}</td>
@@ -221,6 +232,9 @@ export function BacktestResults({ results, onClear }: BacktestResultsProps) {
                         </td>
                         <td className="px-3 py-2 text-right font-bold text-engine-text-primary">
                           ${trade.newBalance.toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-[8px] text-engine-text-muted max-w-[120px] truncate" title={trade.pattern || "—"}>
+                          {trade.pattern || "—"}
                         </td>
                       </tr>
                     ))}
