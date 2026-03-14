@@ -439,6 +439,9 @@ export function useBacktest() {
           pattern: best.pattern,
           competingSymbols: candidates.length,
         });
+
+        // Stop loop if martingale max consecutive losses reached
+        if (stopReason === "martingale") break;
       }
 
       // Build per-symbol results
