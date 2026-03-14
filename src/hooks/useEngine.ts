@@ -738,13 +738,38 @@ export function useLiveAutomation() {
         lossCount: 0,
       });
 
-      const generator = new SignalGenerator(Object.keys(SYMBOLS));
-      generatorRef.current = generator;
+      // CRITICAL FIX: Instead of creating a SEPARATE signal generator (which picks
+      // different symbols than the one displayed in the UI), subscribe to the SAME
+      // signals table that the main signal engine writes to. This guarantees the
+      // automation trades the EXACT signal shown in the UI.
+      const channel = supabase
+        .channel("automation-signals")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "signals" },
+          (payload) => {
+            if (!runningRef.current) return;
+            const s = payload.new;
+            const signal: SignalCandidate = {
+              symbol: s.symbol,
+              type: s.type as "BUY" | "SELL",
+              price: Number(s.price),
+              score: s.score ? Number(s.score) : 0,
+              confidence: s.score ? Number(s.score) : 0,
+              details: s.details || "",
+              logic: "",
+              pattern: null,
+              metrics: s.metrics || {} as any,
+            };
+            console.log(`[Automation] Signal received: ${signal.type} ${SYMBOLS[signal.symbol]} — executing trade`);
+            executeTrade(signal);
+          }
+        )
+        .subscribe();
 
-      generator.onSignal((signal) => executeTrade(signal));
-      generator.start(5 * 60 * 1000);
+      realtimeChannelRef.current = channel;
 
-      // Settlement checker every 15 seconds for faster settling
+      // Settlement checker every 15 seconds
       settleTimerRef.current = setInterval(() => settlePendingContracts(), 15 * 1000);
 
       // Auto-stop after duration
@@ -753,7 +778,7 @@ export function useLiveAutomation() {
         stopAutomation();
       }, params.duration * 60 * 60 * 1000);
 
-      toast.success(`🚀 Automation started — trading every 5 minutes for ${params.duration}h`);
+      toast.success(`🚀 Automation started — will trade every signal for ${params.duration}h`);
     },
     [accountType, validate, executeTrade, settlePendingContracts]
   );
