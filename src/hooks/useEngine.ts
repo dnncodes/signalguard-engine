@@ -817,9 +817,26 @@ export function useTestTrade() {
       setLoading(true);
       setResult(null);
       try {
+        // Use provided direction, or fallback to latest signal for this symbol, or random
+        let tradeType: "BUY" | "SELL" = params.direction || "BUY";
+        if (!params.direction) {
+          try {
+            const { data: latestSignals } = await supabase
+              .from("signals")
+              .select("type")
+              .eq("symbol", params.symbol)
+              .order("time", { ascending: false })
+              .limit(1);
+            if (latestSignals && latestSignals.length > 0) {
+              tradeType = latestSignals[0].type as "BUY" | "SELL";
+            }
+          } catch {
+            // fallback to BUY
+          }
+        }
         const data = await api.executeTestTrade({
           ...params,
-          type: Math.random() > 0.5 ? "BUY" : "SELL",
+          type: tradeType,
         });
         setResult(data);
         toast.success(`Trade placed! Contract #${data.contractId} — settling in ${params.durationMinutes}m`);

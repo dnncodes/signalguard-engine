@@ -295,8 +295,16 @@ export class SignalGenerator {
 
   private async tick() {
     try {
+      const now = Date.now();
+      const elapsed = now - this.lastSignalTime;
+      if (elapsed < this.MIN_INTERVAL_MS) {
+        console.log(`[SignalEngine] Skipping — only ${Math.round(elapsed / 1000)}s since last signal (min ${this.MIN_INTERVAL_MS / 1000}s)`);
+        return;
+      }
+
       const signal = await this.generateSignal();
       if (signal) {
+        this.lastSignalTime = Date.now();
         this.callbacks.forEach((cb) => cb(signal));
       }
     } catch (err) {
