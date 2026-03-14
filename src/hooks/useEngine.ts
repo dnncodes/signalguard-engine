@@ -787,9 +787,9 @@ export function useLiveAutomation() {
     runningRef.current = false;
     setIsRunning(false);
 
-    if (generatorRef.current) {
-      generatorRef.current.stop();
-      generatorRef.current = null;
+    if (realtimeChannelRef.current) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
     }
     if (settleTimerRef.current) {
       clearInterval(settleTimerRef.current);
