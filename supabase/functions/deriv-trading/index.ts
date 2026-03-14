@@ -32,7 +32,7 @@ function derivRequest(ws: WebSocket, msg: Record<string, unknown>): Promise<any>
           }
         }
       } catch {
-        // ignore non-matching messages
+        // ignore
       }
     };
 
@@ -81,7 +81,7 @@ serve(async (req: Request) => {
     const action = url.searchParams.get("action");
 
     if (!action) {
-      return errorResponse("Missing 'action' query parameter. Use: balance, buy, sell, contract_status, ticks, active_symbols", 400);
+      return errorResponse("Missing 'action' query parameter", 400);
     }
 
     const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN");
@@ -101,56 +101,56 @@ serve(async (req: Request) => {
     }
 
     try {
-      // Authorize with Deriv
       const authRes = await derivRequest(ws, { authorize: DERIV_TOKEN });
       if (!authRes.authorize) {
-        throw new Error("Deriv authorization failed - check API token");
+        throw new Error("Deriv authorization failed");
       }
 
-      const accountInfo = authRes.authorize;
-      console.log(`[deriv-trading] Authorized: ${accountInfo.loginid} | Action: ${action}`);
+      const acct = authRes.authorize;
+      console.log(`[deriv-trading] Authorized: ${acct.loginid} | Action: ${action}`);
 
-      // ── BALANCE ──────────────────────────────────────────────
+      // ── BALANCE ──
       if (action === "balance") {
         return jsonResponse({
-          balance: accountInfo.balance,
-          currency: accountInfo.currency,
-          loginid: accountInfo.loginid,
+          balance: acct.balance,
+          currency: acct.currency,
+          loginid: acct.loginid,
         });
       }
 
-      // ── BUY ──────────────────────────────────────────────────
+      // ── BUY ──
       if (action === "buy" && req.method === "POST") {
         const body = await req.json();
         const { symbol, amount, contract_type, duration, duration_unit, source } = body;
 
         if (!symbol || !amount || !contract_type) {
-          return errorResponse("Missing required fields: symbol, amount, contract_type", 400);
+          return errorResponse("Missing: symbol, amount, contract_type", 400);
         }
-
         if (amount < 0.35) {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
-        // Get proposal
+        // Always use 5 minutes for automated trades
+        const dur = duration || 5;
+        const durUnit = duration_unit || "m";
+
         const proposalRes = await derivRequest(ws, {
           proposal: 1,
-          amount: amount,
+          amount,
           basis: "stake",
-          contract_type: contract_type,
-          currency: accountInfo.currency,
-          duration: duration || 5,
-          duration_unit: duration_unit || "m",
-          symbol: symbol,
+          contract_type,
+          currency: acct.currency,
+          duration: dur,
+          duration_unit: durUnit,
+          symbol,
         });
 
         if (!proposalRes.proposal) {
-          throw new Error("Failed to get price proposal from Deriv");
+          throw new Error("Failed to get proposal from Deriv");
         }
 
         console.log(`[deriv-trading] Proposal: ${proposalRes.proposal.id} | Ask: ${proposalRes.proposal.ask_price}`);
 
-        // Buy the contract
         const buyRes = await derivRequest(ws, {
           buy: proposalRes.proposal.id,
           price: proposalRes.proposal.ask_price,
@@ -160,32 +160,26 @@ serve(async (req: Request) => {
         console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price}`);
 
         // Log to database
-        const { error: insertError } = await supabase.from("trade_logs").insert({
+        await supabase.from("trade_logs").insert({
           symbol,
-          trade_type: contract_type === "CALL" || contract_type === "HIGHER" ? "BUY" : "SELL",
+          trade_type: contract_type === "CALL" ? "BUY" : "SELL",
           contract_type,
           amount: buyData.buy_price,
           entry_price: proposalRes.proposal.spot,
           contract_id: buyData.contract_id,
           transaction_id: buyData.transaction_id,
           balance_after: buyData.balance_after,
-          duration_minutes: duration || 5,
-          account_type: accountInfo.is_virtual ? "demo" : "live",
-          currency: accountInfo.currency,
+          duration_minutes: dur,
+          account_type: acct.is_virtual ? "demo" : "live",
+          currency: acct.currency,
           source: source || "manual",
           result: "PENDING",
           metadata: {
             payout: buyData.payout,
             longcode: buyData.longcode,
-            shortcode: buyData.shortcode,
             purchase_time: buyData.purchase_time,
-            start_time: buyData.start_time,
           },
         });
-
-        if (insertError) {
-          console.error("[deriv-trading] Failed to log trade:", insertError.message);
-        }
 
         return jsonResponse({
           success: true,
@@ -197,7 +191,101 @@ serve(async (req: Request) => {
         });
       }
 
-      // ── SELL ─────────────────────────────────────────────────
+      // ── SETTLE — Check and close expired contracts ──
+      if (action === "settle" && req.method === "POST") {
+        const body = await req.json();
+        const { contract_id } = body;
+
+        if (!contract_id) {
+          return errorResponse("Missing contract_id", 400);
+        }
+
+        // Check contract status
+        const statusRes = await derivRequest(ws, {
+          proposal_open_contract: 1,
+          contract_id,
+        });
+
+        const contract = statusRes.proposal_open_contract;
+        if (!contract) {
+          return errorResponse("Contract not found", 404);
+        }
+
+        const isExpired = contract.is_expired || contract.is_settleable;
+        const isOpen = !isExpired && !contract.is_sold;
+
+        // If still open and past expiry, try to sell at market
+        if (isOpen && contract.is_valid_to_sell) {
+          try {
+            const sellRes = await derivRequest(ws, {
+              sell: contract_id,
+              price: 0, // Market price
+            });
+            const sellData = sellRes.sell;
+            const profit = sellData.sold_for - contract.buy_price;
+
+            await supabase
+              .from("trade_logs")
+              .update({
+                exit_price: contract.current_spot,
+                profit,
+                balance_after: sellData.balance_after,
+                result: profit >= 0 ? "WIN" : "LOSS",
+              })
+              .eq("contract_id", contract_id);
+
+            console.log(`[deriv-trading] Settled ${contract_id}: sold for ${sellData.sold_for} | Profit: ${profit}`);
+
+            return jsonResponse({
+              settled: true,
+              sold_for: sellData.sold_for,
+              profit,
+              balance_after: sellData.balance_after,
+              status: "SOLD",
+            });
+          } catch (sellErr) {
+            console.warn(`[deriv-trading] Cannot sell ${contract_id}: ${sellErr.message}`);
+          }
+        }
+
+        // If already expired/settled, just update the DB
+        if (isExpired || contract.is_sold) {
+          const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
+          const result = profit >= 0 ? "WIN" : "LOSS";
+
+          await supabase
+            .from("trade_logs")
+            .update({
+              exit_price: contract.exit_tick || contract.current_spot,
+              profit,
+              balance_after: contract.balance_after || null,
+              result,
+            })
+            .eq("contract_id", contract_id);
+
+          console.log(`[deriv-trading] Contract ${contract_id} already settled: ${result} | Profit: ${profit}`);
+
+          return jsonResponse({
+            settled: true,
+            profit,
+            status: contract.status,
+            sell_price: contract.sell_price || contract.bid_price,
+          });
+        }
+
+        // Still running, not sellable yet
+        return jsonResponse({
+          settled: false,
+          status: "OPEN",
+          current_spot: contract.current_spot,
+          entry_spot: contract.entry_spot,
+          profit: contract.profit,
+          is_valid_to_sell: contract.is_valid_to_sell,
+          date_expiry: contract.date_expiry,
+        });
+      }
+
+      // ── SELL ──
       if (action === "sell" && req.method === "POST") {
         const body = await req.json();
         const { contract_id, price } = body;
@@ -213,8 +301,7 @@ serve(async (req: Request) => {
 
         const sellData = sellRes.sell;
 
-        // Update trade log
-        const { error: updateError } = await supabase
+        await supabase
           .from("trade_logs")
           .update({
             exit_price: sellData.sold_for,
@@ -224,19 +311,14 @@ serve(async (req: Request) => {
           })
           .eq("contract_id", contract_id);
 
-        if (updateError) {
-          console.error("[deriv-trading] Failed to update trade log:", updateError.message);
-        }
-
         return jsonResponse({
           success: true,
           sold_for: sellData.sold_for,
           balance_after: sellData.balance_after,
-          contract_id: sellData.contract_id,
         });
       }
 
-      // ── CONTRACT STATUS ──────────────────────────────────────
+      // ── CONTRACT STATUS ──
       if (action === "contract_status" && req.method === "POST") {
         const body = await req.json();
         const { contract_id } = body;
@@ -253,7 +335,7 @@ serve(async (req: Request) => {
         return jsonResponse(statusRes.proposal_open_contract || statusRes);
       }
 
-      // ── TICK HISTORY ─────────────────────────────────────────
+      // ── TICK HISTORY ──
       if (action === "ticks") {
         const symbol = url.searchParams.get("symbol") || "R_100";
         const count = parseInt(url.searchParams.get("count") || "100");
@@ -270,7 +352,7 @@ serve(async (req: Request) => {
         return jsonResponse(histRes.history || histRes);
       }
 
-      // ── ACTIVE SYMBOLS ───────────────────────────────────────
+      // ── ACTIVE SYMBOLS ──
       if (action === "active_symbols") {
         const symbolsRes = await derivRequest(ws, {
           active_symbols: "brief",
@@ -284,16 +366,9 @@ serve(async (req: Request) => {
         return jsonResponse(synthetics);
       }
 
-      return errorResponse(
-        "Unknown action. Use: balance, buy, sell, contract_status, ticks, active_symbols",
-        400
-      );
+      return errorResponse("Unknown action", 400);
     } finally {
-      try {
-        ws.close();
-      } catch {
-        // ignore close errors
-      }
+      try { ws.close(); } catch { /* ignore */ }
     }
   } catch (err) {
     return errorResponse(err.message || "Internal server error", 500);
