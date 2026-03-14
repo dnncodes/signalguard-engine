@@ -404,22 +404,31 @@ serve(async (req: Request) => {
           }
         }
 
-        if (isExpired || contract.is_sold) {
+      if (isExpired || contract.is_sold) {
           const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
           const result = profit >= 0 ? "WIN" : "LOSS";
+
+          // Fetch current balance after settlement
+          let balanceAfter = contract.balance_after || null;
+          if (!balanceAfter) {
+            try {
+              const balRes = await derivRequest(ws, { balance: 1 });
+              balanceAfter = balRes.balance?.balance ?? null;
+            } catch { /* use null */ }
+          }
 
           await supabase
             .from("trade_logs")
             .update({
               exit_price: contract.exit_tick || contract.current_spot,
               profit,
-              balance_after: contract.balance_after || null,
+              balance_after: balanceAfter,
               result,
             })
             .eq("contract_id", contract_id);
 
           await sendTelegramMessage(
-            formatSettlementTelegram(contract_id, contract.underlying, profit, contract.balance_after)
+            formatSettlementTelegram(contract_id, contract.underlying, profit, balanceAfter)
           );
 
           return jsonResponse({
@@ -427,6 +436,7 @@ serve(async (req: Request) => {
             profit,
             status: contract.status,
             sell_price: contract.sell_price || contract.bid_price,
+            balance_after: balanceAfter,
           });
         }
 

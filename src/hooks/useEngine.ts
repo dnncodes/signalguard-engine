@@ -627,6 +627,7 @@ export function useLiveAutomation() {
           pending.delete(contractId);
           const profit = result.profit || 0;
           const isWin = profit >= 0;
+          const settledBalanceAfter = result.balance_after ?? null;
 
           toast[isWin ? "success" : "error"](
             `Contract ${contractId} settled: ${isWin ? "WIN" : "LOSS"} ($${profit.toFixed(2)})`
@@ -642,8 +643,15 @@ export function useLiveAutomation() {
             const totalProfit = trades.reduce((sum, t) => sum + (t.profit || 0), 0);
             const winCount = trades.filter((t) => t.status === "SETTLED" && (t.profit || 0) >= 0).length;
             const lossCount = trades.filter((t) => t.status === "SETTLED" && (t.profit || 0) < 0).length;
-            return { ...prev, trades, totalProfit, winCount, lossCount };
+            // Update currentBalance from settlement response for accurate equity curve
+            const newCurrentBalance = settledBalanceAfter != null ? settledBalanceAfter : prev.currentBalance;
+            return { ...prev, trades, totalProfit, winCount, lossCount, currentBalance: newCurrentBalance };
           });
+
+          // Also update the top-level balance state
+          if (settledBalanceAfter != null) {
+            setBalance(settledBalanceAfter);
+          }
 
           // ── MARTINGALE LOGIC (bulletproof) ──
           if (configRef.current) {
