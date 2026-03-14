@@ -607,10 +607,17 @@ export function useLiveAutomation() {
   const settlePendingContracts = useCallback(async () => {
     const pending = pendingContractsRef.current;
     if (pending.size === 0) return;
+    // Prevent concurrent settlement processing to protect martingale state
+    if (settlingRef.current) return;
+    settlingRef.current = true;
 
     const now = Date.now();
-    for (const [contractId, info] of pending.entries()) {
-      // Wait at least 5 minutes + 10 second buffer before trying to settle
+    // Process contracts in chronological order (oldest first) for correct martingale chain
+    const sortedEntries = [...pending.entries()].sort((a, b) => a[1].openedAt - b[1].openedAt);
+
+    for (const [contractId, info] of sortedEntries) {
+      if (!runningRef.current && !configRef.current) break;
+
       const CONTRACT_DURATION_MS = 5 * 60 * 1000 + 10 * 1000;
       if (now - info.openedAt < CONTRACT_DURATION_MS) continue;
 
@@ -638,38 +645,41 @@ export function useLiveAutomation() {
             return { ...prev, trades, totalProfit, winCount, lossCount };
           });
 
-          // Martingale logic
+          // ── MARTINGALE LOGIC (bulletproof) ──
           if (configRef.current) {
+            const cfg = configRef.current;
             if (isWin) {
-              martingaleRef.current = { level: 0, amount: configRef.current.initialTradeAmount };
+              // WIN → reset to initial amount, zero consecutive losses
+              martingaleRef.current = { consecutiveLosses: 0, nextAmount: cfg.initialTradeAmount };
+              console.log(`[Martingale] WIN → reset to $${cfg.initialTradeAmount.toFixed(2)}`);
             } else {
-              const newLevel = martingaleRef.current.level + 1;
-              if (newLevel >= configRef.current.maxMartingaleLevel) {
-                // CRITICAL: Stop bot when max consecutive losses reached
-                toast.error(`🛑 Max martingale level (${configRef.current.maxMartingaleLevel}) reached — stopping automation`);
+              // LOSS → increment consecutive losses, multiply amount by 2.2
+              const newConsecutive = martingaleRef.current.consecutiveLosses + 1;
+              if (newConsecutive >= cfg.maxMartingaleLevel) {
+                console.log(`[Martingale] STOP → ${newConsecutive} consecutive losses (max: ${cfg.maxMartingaleLevel})`);
+                toast.error(`🛑 Max martingale level (${cfg.maxMartingaleLevel}) reached — stopping automation`);
+                settlingRef.current = false;
                 stopAutomation();
                 return;
-              } else {
-                martingaleRef.current = {
-                  level: newLevel,
-                  amount: martingaleRef.current.amount * configRef.current.martingaleMultiplier,
-                };
               }
+              // Next amount = current trade amount × multiplier
+              // e.g. $10 → $22 → $48.40 → $106.48 → $234.26
+              const nextAmount = info.amount * cfg.martingaleMultiplier;
+              martingaleRef.current = { consecutiveLosses: newConsecutive, nextAmount };
+              console.log(`[Martingale] LOSS #${newConsecutive} → next trade: $${nextAmount.toFixed(2)} (was $${info.amount.toFixed(2)} × ${cfg.martingaleMultiplier})`);
             }
           }
 
-          // Refresh balance
           loadBalance(accountType);
         }
       } catch (err) {
         console.warn(`Failed to settle ${contractId}:`, err);
-        // If contract is too old (>10 min past expiry), remove from pending
         if (now - info.openedAt > 10 * 60 * 1000) {
           pending.delete(contractId);
-          console.warn(`Removed stale contract ${contractId} from pending`);
         }
       }
     }
+    settlingRef.current = false;
   }, [accountType, loadBalance]);
 
   // Execute a trade based on signal
