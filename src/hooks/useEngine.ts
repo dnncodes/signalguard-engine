@@ -642,13 +642,16 @@ export function useLiveAutomation() {
               martingaleRef.current = { level: 0, amount: configRef.current.initialTradeAmount };
             } else {
               const newLevel = martingaleRef.current.level + 1;
-              if (newLevel < configRef.current.maxMartingaleLevel) {
+              if (newLevel >= configRef.current.maxMartingaleLevel) {
+                // CRITICAL: Stop bot when max consecutive losses reached
+                toast.error(`🛑 Max martingale level (${configRef.current.maxMartingaleLevel}) reached — stopping automation`);
+                stopAutomation();
+                return;
+              } else {
                 martingaleRef.current = {
                   level: newLevel,
                   amount: martingaleRef.current.amount * configRef.current.martingaleMultiplier,
                 };
-              } else {
-                martingaleRef.current = { level: 0, amount: configRef.current.initialTradeAmount };
               }
             }
           }
