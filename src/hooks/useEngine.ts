@@ -740,7 +740,7 @@ export function useLiveAutomation() {
 
       runningRef.current = true;
       configRef.current = params;
-      martingaleRef.current = { level: 0, amount: params.initialTradeAmount };
+      martingaleRef.current = { consecutiveLosses: 0, nextAmount: params.initialTradeAmount };
       setIsRunning(true);
       setStatus({
         running: true,
