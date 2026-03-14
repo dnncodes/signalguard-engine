@@ -1,18 +1,28 @@
 import { ShieldCheck } from "lucide-react";
+import type { ConnectionStatus } from "@/services/derivWebSocket";
 
-export function SystemHealth() {
+interface SystemHealthProps {
+  wsStatus: ConnectionStatus;
+}
+
+export function SystemHealth({ wsStatus }: SystemHealthProps) {
   return (
     <div className="p-6 engine-panel rounded-lg">
       <h3 className="engine-section-title mb-4">
         <ShieldCheck size={14} /> Engine Status
       </h3>
       <div className="space-y-4">
-        <StatusRow label="SMC Logic" value="OPTIMIZED" status="healthy" />
-        <StatusRow label="Latency" value="14ms" status="healthy" />
-        <StatusRow label="Data Integrity" value="99.9%" status="healthy" />
+        <StatusRow
+          label="Deriv WebSocket"
+          value={wsStatus === "connected" ? "CONNECTED" : wsStatus === "connecting" ? "CONNECTING" : "OFFLINE"}
+          status={wsStatus === "connected" ? "healthy" : wsStatus === "connecting" ? "warning" : "error"}
+        />
+        <StatusRow label="SMC Logic" value="EMA 9/21 + RSI" status="healthy" />
+        <StatusRow label="Database" value="CLOUD ACTIVE" status="healthy" />
+        <StatusRow label="Realtime" value="STREAMING" status="healthy" />
         <div className="pt-2 border-t border-engine-border">
           <p className="text-[10px] text-engine-text-dim leading-relaxed italic font-mono">
-            "Strategy uses EMA 9/21 cross + RSI momentum + ATR dynamic levels."
+            "Strategy uses EMA 9/21 cross + RSI momentum on real Deriv tick data."
           </p>
         </div>
       </div>

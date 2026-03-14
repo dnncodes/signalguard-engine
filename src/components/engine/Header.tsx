@@ -1,11 +1,28 @@
-import { Zap, Bell, Settings, RefreshCw } from "lucide-react";
-import type { MarketStatus } from "@/types/engine";
+import { Zap, Bell, Settings, RefreshCw, Wifi, WifiOff } from "lucide-react";
+import type { ConnectionStatus } from "@/services/derivWebSocket";
 
 interface HeaderProps {
   marketCount: number;
+  wsStatus: ConnectionStatus;
 }
 
-export function Header({ marketCount }: HeaderProps) {
+export function Header({ marketCount, wsStatus }: HeaderProps) {
+  const wsLabel =
+    wsStatus === "connected"
+      ? "WS CONNECTED"
+      : wsStatus === "connecting"
+      ? "CONNECTING..."
+      : wsStatus === "error"
+      ? "WS ERROR"
+      : "DISCONNECTED";
+
+  const wsColor =
+    wsStatus === "connected"
+      ? "text-signal-buy"
+      : wsStatus === "error"
+      ? "text-signal-sell"
+      : "text-warning";
+
   return (
     <header className="border-b border-engine-border bg-engine-bg/80 backdrop-blur-xl sticky top-0 z-50">
       <div className="max-w-[1600px] mx-auto px-4 md:px-6 h-14 md:h-16 flex items-center justify-between">
@@ -22,7 +39,13 @@ export function Header({ marketCount }: HeaderProps) {
                 v2.1 PRO
               </span>
               <div className="hidden sm:flex items-center gap-1.5 text-[8px] text-engine-text-dim font-mono">
-                <div className="status-dot-healthy" />
+                {wsStatus === "connected" ? (
+                  <div className="status-dot-healthy" />
+                ) : wsStatus === "error" ? (
+                  <div className="status-dot-error" />
+                ) : (
+                  <div className="status-dot-warning" />
+                )}
                 LIVE FEED
               </div>
             </div>
@@ -32,8 +55,11 @@ export function Header({ marketCount }: HeaderProps) {
         <div className="flex items-center gap-2 md:gap-4">
           <div className="hidden md:flex items-center gap-6 text-[10px] font-mono text-engine-text-muted mr-4">
             <div className="flex flex-col items-end">
-              <span className="text-[8px] text-engine-text-dim uppercase tracking-widest">Connection</span>
-              <span className="text-signal-buy font-bold">WS STABLE</span>
+              <span className="text-[8px] text-engine-text-dim uppercase tracking-widest">Deriv WS</span>
+              <span className={`${wsColor} font-bold flex items-center gap-1`}>
+                {wsStatus === "connected" ? <Wifi size={10} /> : <WifiOff size={10} />}
+                {wsLabel}
+              </span>
             </div>
             <div className="flex flex-col items-end">
               <span className="text-[8px] text-engine-text-dim uppercase tracking-widest">Markets</span>
@@ -53,12 +79,16 @@ export function Header({ marketCount }: HeaderProps) {
 
       {/* Mobile Status Bar */}
       <div className="md:hidden flex items-center justify-between px-4 py-1.5 bg-signal-buy-bg border-t border-engine-border text-[8px] font-mono">
-        <div className="flex items-center gap-1.5 text-signal-buy">
-          <div className="status-dot-healthy" />
-          <span>WS CONNECTED</span>
+        <div className={`flex items-center gap-1.5 ${wsColor}`}>
+          {wsStatus === "connected" ? (
+            <div className="status-dot-healthy" />
+          ) : (
+            <div className="status-dot-warning" />
+          )}
+          <span>{wsLabel}</span>
         </div>
         <div className="flex items-center gap-1.5 text-engine-text-dim">
-          <RefreshCw size={8} className="animate-spin-slow" />
+          <RefreshCw size={8} className={wsStatus === "connecting" ? "animate-spin" : ""} />
           <span>SYNCING {marketCount} MARKETS</span>
         </div>
       </div>
