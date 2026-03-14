@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { Activity, BarChart3, TrendingUp, Zap, Target, Shield } from "lucide-react";
+import { Activity, BarChart3, TrendingUp, Zap, Target, Shield, Clock } from "lucide-react";
 import type { MarketStatus, Signal } from "@/types/engine";
 import { SYMBOLS } from "@/types/engine";
 
@@ -36,110 +36,163 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
     return { activeMarkets, totalMarkets, upCount, downCount, bullBear, latestSignal, buySignals, sellSignals, avgScore };
   }, [status, signals]);
 
+  const signalAge = useMemo(() => {
+    if (!stats.latestSignal?.time) return "";
+    const diff = Date.now() - new Date(stats.latestSignal.time).getTime();
+    if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    return `${Math.floor(diff / 3600000)}h ago`;
+  }, [stats.latestSignal, tick]);
+
+  const isBuy = stats.latestSignal?.type === "BUY";
+
   return (
     <section className="relative overflow-hidden border-b border-engine-border">
-      {/* Animated gradient backdrop */}
-      <div className="absolute inset-0 bg-gradient-to-br from-[hsl(var(--signal-buy)/0.03)] via-[hsl(var(--engine-bg))] to-[hsl(var(--signal-sell)/0.03)]" />
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[hsl(var(--signal-buy)/0.04)] rounded-full blur-[120px] pointer-events-none" />
+      {/* Layered gradient backdrop */}
+      <div className="absolute inset-0 bg-[hsl(var(--engine-bg))]" />
+      <div className="absolute inset-0 bg-gradient-to-br from-[hsl(var(--signal-buy)/0.04)] via-transparent to-[hsl(var(--signal-sell)/0.03)]" />
+      <div className="absolute top-0 left-1/3 w-[500px] h-[250px] bg-[hsl(var(--signal-buy)/0.03)] rounded-full blur-[100px] pointer-events-none" />
+      <div className="absolute bottom-0 right-1/4 w-[300px] h-[200px] bg-[hsl(var(--signal-sell)/0.02)] rounded-full blur-[80px] pointer-events-none" />
 
-      <div className="relative max-w-[1600px] mx-auto px-6 py-8">
-        {/* Top line — tagline */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[hsl(var(--signal-buy)/0.2)] bg-[hsl(var(--signal-buy)/0.05)]">
-            <div className="w-1.5 h-1.5 rounded-full bg-signal-buy animate-pulse" />
+      <div className="relative max-w-[1600px] mx-auto px-6 py-6 md:py-8">
+        {/* Status bar */}
+        <div className="flex items-center gap-3 mb-5">
+          <div className="flex items-center gap-2 px-3 py-1 rounded-full border border-[hsl(var(--signal-buy)/0.25)] bg-[hsl(var(--signal-buy)/0.08)]">
+            <div className={`w-1.5 h-1.5 rounded-full ${wsStatus === "connected" ? "bg-signal-buy animate-pulse" : "bg-signal-sell"}`} />
             <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-signal-buy font-mono">
-              {wsStatus === "connected" ? "LIVE" : "OFFLINE"} · {stats.activeMarkets} MARKETS STREAMING
+              {wsStatus === "connected" ? "LIVE" : "OFFLINE"} · {stats.activeMarkets} MARKETS
             </span>
           </div>
           <span className="hidden sm:inline text-[9px] text-engine-text-dim font-mono tracking-widest">
-            5-MIN SCALPING · MULTI-SYMBOL ANALYSIS · REAL-TIME SIGNALS
+            5-MIN SCALPING · MULTI-SYMBOL · REAL-TIME
           </span>
         </div>
 
-        {/* Main headline */}
-        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-8">
-          <div>
+        {/* Main row: headline + signal card */}
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5 mb-6">
+          <div className="flex-1 min-w-0">
             <h2 className="text-2xl md:text-3xl font-black tracking-tight text-engine-text-primary leading-tight">
               Synthetic Index
               <span className="text-signal-buy"> Command Center</span>
             </h2>
-            <p className="text-xs text-engine-text-muted mt-2 max-w-xl leading-relaxed">
-              Monitoring <span className="text-engine-text-secondary font-bold">{stats.totalMarkets}</span> synthetic indices with
-              EMA crossovers, RSI, MACD, ATR volatility, engulfing patterns and price-RSI divergence detection.
-              Signals generated every <span className="text-signal-buy font-bold">5 minutes</span> picking the highest-confidence opportunity.
+            <p className="text-[11px] text-engine-text-muted mt-2 max-w-xl leading-relaxed font-mono">
+              Monitoring <span className="text-engine-text-secondary font-bold">{stats.totalMarkets}</span> indices ·
+              EMA · RSI · MACD · ATR · Divergence · Engulfing ·
+              Best signal every <span className="text-signal-buy font-bold">5 min</span>
             </p>
           </div>
 
-          {/* Latest signal card */}
+          {/* Latest Signal Card — polished */}
           {stats.latestSignal && (
-            <div className={`shrink-0 px-5 py-4 rounded-lg border ${
-              stats.latestSignal.type === "BUY"
-                ? "border-[hsl(var(--signal-buy)/0.3)] bg-[hsl(var(--signal-buy)/0.05)]"
-                : "border-[hsl(var(--signal-sell)/0.3)] bg-[hsl(var(--signal-sell)/0.05)]"
+            <div className={`shrink-0 relative overflow-hidden rounded-xl border backdrop-blur-sm ${
+              isBuy
+                ? "border-[hsl(var(--signal-buy)/0.25)] bg-gradient-to-br from-[hsl(var(--signal-buy)/0.08)] to-[hsl(var(--signal-buy)/0.02)]"
+                : "border-[hsl(var(--signal-sell)/0.25)] bg-gradient-to-br from-[hsl(var(--signal-sell)/0.08)] to-[hsl(var(--signal-sell)/0.02)]"
             }`}>
-              <div className="flex items-center gap-2 mb-1">
-                <Zap size={12} className={stats.latestSignal.type === "BUY" ? "text-signal-buy" : "text-signal-sell"} />
-                <span className="text-[8px] uppercase tracking-widest text-engine-text-dim font-mono">Latest Signal</span>
-              </div>
-              <div className="flex items-baseline gap-3">
-                <span className={`text-lg font-black ${stats.latestSignal.type === "BUY" ? "text-signal-buy" : "text-signal-sell"}`}>
-                  {stats.latestSignal.type}
-                </span>
-                <span className="text-xs text-engine-text-secondary font-mono">
-                  {SYMBOLS[stats.latestSignal.symbol]?.replace(" Index", "") || stats.latestSignal.symbol}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 mt-1 text-[9px] font-mono text-engine-text-muted">
-                <span>Score: <b className="text-engine-text-primary">{stats.latestSignal.score || "—"}</b></span>
-                <span>${stats.latestSignal.price.toFixed(2)}</span>
+              {/* Glow accent */}
+              <div className={`absolute top-0 left-0 right-0 h-[2px] ${isBuy ? "bg-signal-buy" : "bg-signal-sell"}`} />
+              
+              <div className="px-5 py-4">
+                <div className="flex items-center justify-between gap-4 mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                      isBuy ? "bg-[hsl(var(--signal-buy)/0.15)]" : "bg-[hsl(var(--signal-sell)/0.15)]"
+                    }`}>
+                      <Zap size={14} className={isBuy ? "text-signal-buy" : "text-signal-sell"} />
+                    </div>
+                    <span className="text-[8px] uppercase tracking-[0.15em] text-engine-text-dim font-mono font-bold">
+                      Latest Signal
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 text-engine-text-dim">
+                    <Clock size={9} />
+                    <span className="text-[8px] font-mono">{signalAge}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-baseline gap-3 mb-2">
+                  <span className={`text-xl font-black tracking-tight ${isBuy ? "text-signal-buy" : "text-signal-sell"}`}>
+                    {stats.latestSignal.type}
+                  </span>
+                  <span className="text-xs text-engine-text-secondary font-mono font-semibold">
+                    {SYMBOLS[stats.latestSignal.symbol]?.replace(" Index", "") || stats.latestSignal.symbol}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-4 text-[9px] font-mono text-engine-text-muted">
+                  <span className="flex items-center gap-1">
+                    <span className="text-engine-text-dim">Score</span>
+                    <b className={isBuy ? "text-signal-buy" : "text-signal-sell"}>{stats.latestSignal.score || "—"}</b>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-engine-text-dim">Entry</span>
+                    <b className="text-engine-text-primary">${stats.latestSignal.price.toFixed(2)}</b>
+                  </span>
+                  {/* Confidence bar */}
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-engine-text-dim">Conf</span>
+                    <div className="flex gap-[2px]">
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className={`w-[5px] h-2.5 rounded-[1px] transition-colors ${
+                            i < Math.round(((stats.latestSignal?.score || 0) / 100) * 5)
+                              ? isBuy ? "bg-signal-buy" : "bg-signal-sell"
+                              : "bg-[hsl(0_0%_100%/0.08)]"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  </span>
+                </div>
               </div>
             </div>
           )}
         </div>
 
         {/* Stats grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
           <StatCard
-            icon={<Activity size={14} />}
-            label="Active Markets"
+            icon={<Activity size={13} />}
+            label="Markets"
             value={`${stats.activeMarkets}/${stats.totalMarkets}`}
-            sub="Streaming live ticks"
-            color="text-signal-buy"
+            sub="Live streaming"
+            accent="buy"
           />
           <StatCard
-            icon={<TrendingUp size={14} />}
+            icon={<TrendingUp size={13} />}
             label="Bull / Bear"
             value={`${stats.upCount} / ${stats.downCount}`}
-            sub={`${stats.bullBear}% bullish sentiment`}
-            color={Number(stats.bullBear) >= 50 ? "text-signal-buy" : "text-signal-sell"}
+            sub={`${stats.bullBear}% bullish`}
+            accent={Number(stats.bullBear) >= 50 ? "buy" : "sell"}
           />
           <StatCard
-            icon={<BarChart3 size={14} />}
-            label="Signals (10)"
+            icon={<BarChart3 size={13} />}
+            label="Signals"
             value={`${stats.buySignals}B / ${stats.sellSignals}S`}
-            sub={`Avg score: ${stats.avgScore}`}
-            color="text-engine-text-primary"
+            sub={`Avg: ${stats.avgScore}`}
+            accent="neutral"
           />
           <StatCard
-            icon={<Target size={14} />}
-            label="Signal Interval"
+            icon={<Target size={13} />}
+            label="Interval"
             value="5 min"
-            sub="Strict cycle timing"
-            color="text-signal-buy"
+            sub="Strict cycle"
+            accent="buy"
           />
           <StatCard
-            icon={<Shield size={14} />}
+            icon={<Shield size={13} />}
             label="Indicators"
             value="6"
-            sub="EMA RSI MACD ATR DIV ENG"
-            color="text-engine-text-primary"
+            sub="EMA RSI MACD ATR"
+            accent="neutral"
           />
           <StatCard
-            icon={<Zap size={14} />}
+            icon={<Zap size={13} />}
             label="Engine"
             value="v3.0"
-            sub="Multi-symbol concurrent"
-            color="text-signal-buy"
+            sub="Multi-symbol"
+            accent="buy"
           />
         </div>
       </div>
@@ -147,21 +200,33 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
   );
 }
 
-function StatCard({ icon, label, value, sub, color }: {
+function StatCard({ icon, label, value, sub, accent }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   sub: string;
-  color: string;
+  accent: "buy" | "sell" | "neutral";
 }) {
+  const colorClass = accent === "buy"
+    ? "text-signal-buy"
+    : accent === "sell"
+    ? "text-signal-sell"
+    : "text-engine-text-primary";
+
+  const borderHover = accent === "buy"
+    ? "hover:border-[hsl(var(--signal-buy)/0.15)]"
+    : accent === "sell"
+    ? "hover:border-[hsl(var(--signal-sell)/0.15)]"
+    : "hover:border-[hsl(var(--engine-border-hover))]";
+
   return (
-    <div className="px-4 py-3.5 rounded-lg border border-engine-border bg-[hsl(var(--engine-surface))] hover:border-[hsl(var(--engine-border-hover))] transition-all group">
-      <div className="flex items-center gap-2 mb-2">
+    <div className={`px-3.5 py-3 rounded-lg border border-engine-border bg-[hsl(var(--engine-surface))] ${borderHover} transition-all group cursor-default`}>
+      <div className="flex items-center gap-1.5 mb-1.5">
         <span className="text-engine-text-dim group-hover:text-engine-text-muted transition-colors">{icon}</span>
-        <span className="text-[8px] uppercase tracking-[0.15em] text-engine-text-dim font-mono font-bold">{label}</span>
+        <span className="text-[7px] uppercase tracking-[0.15em] text-engine-text-dim font-mono font-bold">{label}</span>
       </div>
-      <p className={`text-base font-black font-mono ${color} leading-none`}>{value}</p>
-      <p className="text-[8px] text-engine-text-dim font-mono mt-1.5 truncate">{sub}</p>
+      <p className={`text-sm font-black font-mono ${colorClass} leading-none`}>{value}</p>
+      <p className="text-[7.5px] text-engine-text-dim font-mono mt-1 truncate">{sub}</p>
     </div>
   );
 }
