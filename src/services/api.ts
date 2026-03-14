@@ -202,7 +202,11 @@ export async function sendTelegramSignal(signal: SignalCandidate): Promise<void>
         type: signal.type,
         price: signal.price,
         score: signal.score,
+        confidence: signal.confidence,
         details: signal.details,
+        logic: signal.logic,
+        pattern: signal.pattern,
+        metrics: signal.metrics,
       },
     });
   } catch (err) {
