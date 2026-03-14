@@ -1,1 +1,4 @@
 project_id = "apqmwwezvilkcftiywfz"
+
+[functions.deriv-trading]
+verify_jwt = false

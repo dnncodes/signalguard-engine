@@ -1,4 +1,5 @@
-import { Layers } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Layers, History } from "lucide-react";
 import { Header } from "@/components/engine/Header";
 import { MarketTicker } from "@/components/engine/MarketTicker";
 import { BacktestPanel } from "@/components/engine/BacktestPanel";
@@ -35,6 +36,17 @@ export default function EngineDashboard() {
             <p className="text-xs font-mono text-signal-sell">{dataError}</p>
           </div>
         )}
+
+        {/* Nav to Trade History */}
+        <div className="mb-6 flex justify-end">
+          <Link
+            to="/history"
+            className="flex items-center gap-2 px-4 py-2 bg-engine-surface hover:bg-engine-surface-hover border border-engine-border rounded-md text-[10px] font-bold uppercase tracking-widest text-engine-text-muted hover:text-signal-buy transition-all"
+          >
+            <History size={14} />
+            Trade History
+          </Link>
+        </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
           {/* Sidebar */}

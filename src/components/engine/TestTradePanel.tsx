@@ -15,7 +15,7 @@ interface TestTradePanelProps {
 
 export function TestTradePanel({ loading, result, onExecute }: TestTradePanelProps) {
   const [accountType, setAccountType] = useState<"demo" | "live">("demo");
-  const [amount, setAmount] = useState(1.0);
+  const [amount, setAmount] = useState(1.0); // Deriv min is $0.35
   const [duration, setDuration] = useState(5);
   const [symbol, setSymbol] = useState("R_10");
 
