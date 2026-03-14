@@ -686,7 +686,7 @@ export function useLiveAutomation() {
   const executeTrade = useCallback(async (signal: SignalCandidate) => {
     if (!runningRef.current || !configRef.current) return;
 
-    const tradeAmount = Math.max(martingaleRef.current.amount, 0.35);
+    const tradeAmount = Math.max(martingaleRef.current.nextAmount, 0.35);
     const contractType = signal.type === "BUY" ? "CALL" : "PUT";
 
     try {
@@ -703,6 +703,7 @@ export function useLiveAutomation() {
         symbol: signal.symbol,
         type: signal.type,
         amount: tradeAmount,
+        martingaleLevel: martingaleRef.current.consecutiveLosses,
         openedAt: Date.now(),
       });
 
