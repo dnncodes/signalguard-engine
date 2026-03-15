@@ -919,8 +919,8 @@ export function useLiveAutomation() {
 
     setStatus((prev) => (prev ? { ...prev, running: false } : null));
     toast.info("Automation stopped");
-    loadBalance(accountType);
-  }, [accountType, loadBalance, settlePendingContracts]);
+    loadBalance(accountTypeRef.current);
+  }, [loadBalance, settlePendingContracts]);
 
   useEffect(() => {
     setBalance(null);
