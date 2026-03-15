@@ -20,13 +20,12 @@
  *    Adds momentum confirmation: oversold %K crossing above %D = BUY,
  *    overbought %K crossing below %D = SELL.
  *
- * 5. CONFLUENCE GATE
- *    Minimum 2 out of 8 indicators must agree on direction.
- *    Below that, signal is suppressed regardless of score.
+ * 5. CONFLUENCE CHECK (soft — penalizes but never kills)
+ *    Low confluence adds penalty to score but signal is still emitted.
  *
- * 6. RAISED CONFIDENCE THRESHOLD
- *    Minimum composite score raised from 25 → 40.
- *    Minimum confidence raised to 45%.
+ * 6. GUARANTEED 5-MIN SIGNAL
+ *    Every cycle ALWAYS emits the best candidate regardless of score.
+ *    Low-confidence signals are tagged with ⚠️ in output.
  *
  * 7. REBALANCED WEIGHTS (total 100)
  *    EMA Cross:   0-20  (was 0-25)
@@ -96,7 +95,7 @@ export interface SignalCandidate {
 
 // ─── Symbol Analysis ─────────────────────────────────────────
 
-export function analyzeSymbol(prices: number[]): SignalCandidate | null {
+export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandidate | null {
   if (prices.length < 50) return null;
 
   const ema9 = calculateEMA(prices, 9);
@@ -309,40 +308,39 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   const dominantCount = rawType === "BUY" ? buyCount : sellCount;
 
   // ════════════════════════════════════════════════════════════
-  // STEP 3: RSI HARD LOCK — override direction if RSI is extreme
-  // This is the CRITICAL fix: RSI=3.1 can NEVER produce a SELL
+  // STEP 3: CONFLICT PENALTY INIT + RSI HARD LOCK
   // ════════════════════════════════════════════════════════════
 
+  let conflictPenalty = 0;
   let type: "BUY" | "SELL" = rawType;
 
   if (rsiHardLock) {
     if (rawType !== rsiHardLock) {
-      // RSI extreme contradicts the voted direction → KILL the signal
       console.log(
-        `[SignalEngine] CONFLICT SUPPRESSED: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — signal killed`
+        `[SignalEngine] CONFLICT: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — forcing ${rsiHardLock}`
       );
-      return null;
+      type = rsiHardLock;
+      conflictPenalty += 20;
+    } else {
+      type = rsiHardLock;
     }
-    type = rsiHardLock;
   }
 
   // ════════════════════════════════════════════════════════════
-  // STEP 4: CONFLUENCE MINIMUM — require ≥3 agreeing indicators
+  // STEP 4: CONFLUENCE CHECK — penalize low agreement but never kill
   // ════════════════════════════════════════════════════════════
 
   const MIN_CONFLUENCE = 2;
   if (dominantCount < MIN_CONFLUENCE) {
     console.log(
-      `[SignalEngine] CONFLUENCE GATE: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — need ${MIN_CONFLUENCE}. Skipping.`
+      `[SignalEngine] CONFLUENCE LOW: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — below ${MIN_CONFLUENCE}`
     );
-    return null;
+    conflictPenalty += 10;
   }
 
   // ════════════════════════════════════════════════════════════
   // STEP 5: CONFLICT PENALTY — reduce score if strong disagreement
   // ════════════════════════════════════════════════════════════
-
-  let conflictPenalty = 0;
 
   // Check for RSI vs Pattern conflict (the exact bug from the Telegram example)
   if (rsiDirection !== 0 && engulfingDirection !== 0 && rsiDirection !== engulfingDirection) {
@@ -375,21 +373,13 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   const totalScore = Math.min(Math.round(penalizedScore * (0.6 + 0.4 * confluenceRatio)), 100);
 
   // ════════════════════════════════════════════════════════════
-  // STEP 7: QUALITY GATE — minimum score and confidence
+  // STEP 7: CONFIDENCE CALCULATION (no gate — always emit)
   // ════════════════════════════════════════════════════════════
-
-  if (totalScore < 40) {
-    return null; // Score too low — don't generate noise
-  }
 
   const confidence = Math.min(
     (dominantWeight / Math.max(totalWeight, 1)) * totalScore,
     100
   );
-
-  if (confidence < 45) {
-    return null; // Confidence too low — skip
-  }
 
   // ════════════════════════════════════════════════════════════
   // STEP 8: BUILD OUTPUT
@@ -520,7 +510,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[SignalEngine] No high-confidence signals this cycle — skipping");
+      console.log("[SignalEngine] No symbols with sufficient data this cycle");
       return null;
     }
 
