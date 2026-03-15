@@ -104,9 +104,11 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
                       Latest Signal
                     </span>
                   </div>
-                  <div className="flex items-center gap-1 text-engine-text-dim">
-                    <Clock size={9} />
-                    <span className="text-[8px] font-mono">{signalAge}</span>
+                  <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full ${
+                    isBuy ? "bg-[hsl(var(--signal-buy)/0.12)] text-signal-buy" : "bg-[hsl(var(--signal-sell)/0.12)] text-signal-sell"
+                  }`}>
+                    <Clock size={10} className="animate-pulse" />
+                    <span className="text-[9px] font-mono font-bold">{signalAge}</span>
                   </div>
                 </div>
 
@@ -183,7 +185,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
           <StatCard
             icon={<Zap size={13} />}
             label="Engine"
-            value="v3.0"
+            value="v3.1"
             sub="Multi-symbol"
             accent="buy"
           />
