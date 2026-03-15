@@ -895,7 +895,7 @@ export function useLiveAutomation() {
         : "";
       toast.success(`🚀 Automation started — will trade every signal${durationMsg}`);
     },
-    [accountType, validate, executeTrade, settlePendingContracts, loadBalance]
+    [validate, executeTrade, settlePendingContracts, loadBalance]
   );
 
   const stopAutomation = useCallback(async () => {
