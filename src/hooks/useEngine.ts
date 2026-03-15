@@ -564,7 +564,11 @@ export function useLiveAutomation() {
   const [balance, setBalance] = useState<number | null>(null);
   const [currency, setCurrency] = useState("USD");
   const [balanceLoading, setBalanceLoading] = useState(false);
-  const [accountType, setAccountType] = useState<"demo" | "live">("demo");
+  const [accountType, setAccountTypeState] = useState<"demo" | "live">("demo");
+  const setAccountType = useCallback((val: "demo" | "live") => {
+    accountTypeRef.current = val;
+    setAccountTypeState(val);
+  }, []);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const pendingContractsRef = useRef<Map<number, { symbol: string; type: string; amount: number; martingaleLevel: number; openedAt: number }>>(new Map());
