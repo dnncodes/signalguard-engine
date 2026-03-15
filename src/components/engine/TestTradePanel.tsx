@@ -92,7 +92,7 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
               : "bg-blue-500 text-engine-bg hover:bg-blue-400 shadow-lg shadow-blue-500/20 active:scale-[0.98]"
           }`}
         >
-          {loading ? "Executing..." : "Execute Test Trade"}
+          {loading ? "Executing..." : "Execute Manual Trade"}
         </button>
 
         {result && (
