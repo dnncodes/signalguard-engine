@@ -780,6 +780,7 @@ export function useLiveAutomation() {
         duration: 5,
         durationUnit: "m",
         source: "automation",
+        accountType,
       });
 
       pendingContractsRef.current.set(result.contract_id, {
