@@ -511,7 +511,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[SignalEngine] No high-confidence signals this cycle — skipping");
+      console.log("[SignalEngine] No symbols with sufficient data this cycle");
       return null;
     }
 
