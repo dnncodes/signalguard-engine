@@ -158,7 +158,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     rsiSignal = "extreme_overbought";
     rsiDirection = -1;
     rsiHardLock = "SELL";
-  } else if (currentRSI > 65) {
+  } else if (currentRSI > 70) {
     rsiScore = 12;
     rsiSignal = "overbought";
     rsiDirection = -1;
