@@ -30,7 +30,7 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
     <section className="p-6 engine-panel rounded-lg shadow-2xl">
       <div className="flex items-center justify-between mb-6">
         <h3 className="engine-section-title">
-          <Target size={14} /> Test Trade
+          <Target size={14} /> Manual Trade
         </h3>
         {loading && <RefreshCw size={14} className="animate-spin text-signal-buy" />}
       </div>
@@ -92,7 +92,7 @@ export function TestTradePanel({ loading, result, onExecute }: TestTradePanelPro
               : "bg-blue-500 text-engine-bg hover:bg-blue-400 shadow-lg shadow-blue-500/20 active:scale-[0.98]"
           }`}
         >
-          {loading ? "Executing..." : "Execute Test Trade"}
+          {loading ? "Executing..." : "Execute Manual Trade"}
         </button>
 
         {result && (

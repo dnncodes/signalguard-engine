@@ -233,6 +233,53 @@ function formatSettlementTelegram(contractId: number, symbol: string, profit: nu
   return lines.join("\n");
 }
 
+// ─── Account Switching Helper ────────────────────────────────
+// Deriv API: after initial authorize, we need to switch to the correct account
+// (demo = virtual, live = real) by re-authorizing with that account's token.
+// The `authorize` response contains `account_list` with tokens for each account.
+
+async function switchToAccount(
+  ws: WebSocket,
+  initialAuth: any,
+  requestedAccountType: "demo" | "live"
+): Promise<any> {
+  const isCurrentVirtual = !!initialAuth.is_virtual;
+  const wantVirtual = requestedAccountType === "demo";
+
+  // If already on the correct account type, return as-is
+  if (isCurrentVirtual === wantVirtual) {
+    console.log(`[deriv-trading] Already on ${requestedAccountType} account: ${initialAuth.loginid}`);
+    return initialAuth;
+  }
+
+  // Find the target account from account_list
+  const accountList = initialAuth.account_list || [];
+  const targetAccount = accountList.find((acc: any) =>
+    wantVirtual ? acc.is_virtual === 1 : acc.is_virtual === 0
+  );
+
+  if (!targetAccount) {
+    console.warn(`[deriv-trading] No ${requestedAccountType} account found in account_list. Using default.`);
+    return initialAuth;
+  }
+
+  // The account_list contains tokens only if the API token has "admin" scope.
+  // If token is available, re-authorize with it. Otherwise use loginid param.
+  if (targetAccount.token) {
+    console.log(`[deriv-trading] Switching to ${requestedAccountType} account: ${targetAccount.loginid} using token`);
+    const switchRes = await derivRequest(ws, { authorize: targetAccount.token });
+    if (switchRes.authorize) {
+      console.log(`[deriv-trading] Switched OK → ${switchRes.authorize.loginid} | Balance: ${switchRes.authorize.balance} ${switchRes.authorize.currency}`);
+      return switchRes.authorize;
+    }
+    throw new Error(`Failed to switch to ${requestedAccountType} account`);
+  }
+
+  // Fallback: if no per-account token, log a warning
+  console.warn(`[deriv-trading] No token for ${targetAccount.loginid} — ensure API token has 'admin' or 'read' scope. Using default account.`);
+  return initialAuth;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -276,21 +323,51 @@ serve(async (req: Request) => {
         throw new Error("Deriv authorization failed");
       }
 
-      const acct = authRes.authorize;
-      console.log(`[deriv-trading] Authorized: ${acct.loginid} | Action: ${action}`);
+      // Determine requested account type from query param or request body
+      let requestedAccountType: "demo" | "live" | null = null;
+      const accountTypeParam = url.searchParams.get("account_type");
+      if (accountTypeParam === "demo" || accountTypeParam === "live") {
+        requestedAccountType = accountTypeParam;
+      }
+
+      // For POST requests, also check the body for account_type
+      let parsedBody: any = null;
+      if (req.method === "POST") {
+        try {
+          const bodyText = await req.text();
+          parsedBody = bodyText ? JSON.parse(bodyText) : {};
+        } catch {
+          parsedBody = {};
+        }
+        if (!requestedAccountType && (parsedBody.account_type === "demo" || parsedBody.account_type === "live")) {
+          requestedAccountType = parsedBody.account_type;
+        }
+      }
+
+      // Switch to the correct account if requested
+      let acct = authRes.authorize;
+      if (requestedAccountType) {
+        acct = await switchToAccount(ws, acct, requestedAccountType);
+      }
+
+      console.log(`[deriv-trading] Authorized: ${acct.loginid} (${acct.is_virtual ? "demo" : "live"}) | Balance: ${acct.balance} ${acct.currency} | Action: ${action}`);
 
       // ── BALANCE ──
       if (action === "balance") {
+        // Fetch fresh balance (not just from authorize cache)
+        const balRes = await derivRequest(ws, { balance: 1 });
+        const bal = balRes.balance || {};
         return jsonResponse({
-          balance: acct.balance,
-          currency: acct.currency,
+          balance: bal.balance ?? acct.balance,
+          currency: bal.currency ?? acct.currency,
           loginid: acct.loginid,
+          is_virtual: !!acct.is_virtual,
         });
       }
 
       // ── BUY ──
-      if (action === "buy" && req.method === "POST") {
-        const body = await req.json();
+      if (action === "buy") {
+        const body = parsedBody || {};
         const { symbol, amount, contract_type, duration, duration_unit, source } = body;
 
         if (!symbol || !amount || !contract_type) {
@@ -324,7 +401,7 @@ serve(async (req: Request) => {
         });
 
         const buyData = buyRes.buy;
-        console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price}`);
+        console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price} | Account: ${acct.loginid}`);
 
         await supabase.from("trade_logs").insert({
           symbol,
@@ -358,8 +435,8 @@ serve(async (req: Request) => {
       }
 
       // ── SETTLE ──
-      if (action === "settle" && req.method === "POST") {
-        const body = await req.json();
+      if (action === "settle") {
+        const body = parsedBody || {};
         const { contract_id } = body;
 
         if (!contract_id) {
@@ -414,7 +491,7 @@ serve(async (req: Request) => {
           }
         }
 
-      if (isExpired || contract.is_sold) {
+        if (isExpired || contract.is_sold) {
           const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
           const result = profit >= 0 ? "WIN" : "LOSS";
 
@@ -462,8 +539,8 @@ serve(async (req: Request) => {
       }
 
       // ── SELL ──
-      if (action === "sell" && req.method === "POST") {
-        const body = await req.json();
+      if (action === "sell") {
+        const body = parsedBody || {};
         const { contract_id, price } = body;
 
         if (!contract_id) {
@@ -495,8 +572,8 @@ serve(async (req: Request) => {
       }
 
       // ── CONTRACT STATUS ──
-      if (action === "contract_status" && req.method === "POST") {
-        const body = await req.json();
+      if (action === "contract_status") {
+        const body = parsedBody || {};
         const { contract_id } = body;
 
         if (!contract_id) {

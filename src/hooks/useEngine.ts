@@ -659,7 +659,7 @@ export function useLiveAutomation() {
       if (now - info.openedAt < SETTLEMENT_WAIT_MS) continue;
 
       try {
-        const result = await api.settleContract(contractId);
+        const result = await api.settleContract(contractId, accountType);
         if (result.settled) {
           pending.delete(contractId);
           const profit = result.profit || 0;
@@ -780,6 +780,7 @@ export function useLiveAutomation() {
         duration: 5,
         durationUnit: "m",
         source: "automation",
+        accountType,
       });
 
       pendingContractsRef.current.set(result.contract_id, {
@@ -934,7 +935,7 @@ export function useLiveAutomation() {
   };
 }
 
-// ─── useTestTrade (with martingale support) ──────────────────
+// ─── useTestTrade (Manual Trade with martingale support) ─────
 
 export function useTestTrade() {
   const [loading, setLoading] = useState(false);
@@ -1001,7 +1002,7 @@ export function useTestTrade() {
 
         const attemptSettle = async () => {
           try {
-            const settled = await api.settleContract(data.contractId);
+            const settled = await api.settleContract(data.contractId, params.accountType);
             if (settled.settled) {
               if (settleTimerRef.current) clearInterval(settleTimerRef.current);
               const profit = settled.profit || 0;

@@ -93,13 +93,16 @@ export async function fetchMarketStatus(): Promise<MarketStatus[]> {
 }
 
 export async function fetchBalance(
-  _accountType: "demo" | "live"
+  accountType: "demo" | "live"
 ): Promise<BalanceResponse> {
   const data = await callEdgeFunction<{
     balance: number;
     currency: string;
     loginid: string;
-  }>("balance");
+    is_virtual?: boolean;
+  }>("balance", {
+    queryParams: { account_type: accountType },
+  });
   return { balance: data.balance, currency: data.currency };
 }
 
@@ -110,6 +113,7 @@ export async function executeTrade(params: {
   duration: number;
   durationUnit: string;
   source: string;
+  accountType?: "demo" | "live";
 }): Promise<{
   success: boolean;
   contract_id: number;
@@ -127,11 +131,12 @@ export async function executeTrade(params: {
       duration: params.duration,
       duration_unit: params.durationUnit,
       source: params.source,
+      account_type: params.accountType || "demo",
     },
   });
 }
 
-export async function settleContract(contractId: number): Promise<{
+export async function settleContract(contractId: number, accountType?: "demo" | "live"): Promise<{
   settled: boolean;
   profit?: number;
   status: string;
@@ -140,7 +145,10 @@ export async function settleContract(contractId: number): Promise<{
 }> {
   return callEdgeFunction("settle", {
     method: "POST",
-    body: { contract_id: contractId },
+    body: {
+      contract_id: contractId,
+      account_type: accountType || "demo",
+    },
   });
 }
 
@@ -175,7 +183,8 @@ export async function executeTestTrade(params: {
       contract_type: contractType,
       duration: params.durationMinutes,
       duration_unit: "m",
-      source: "test",
+      source: "manual",
+      account_type: params.accountType,
     },
   });
 
@@ -245,6 +254,22 @@ export async function fetchTradeHistory(limit = 50): Promise<any[]> {
   return data || [];
 }
 
+export async function deleteTradeLog(id: number): Promise<void> {
+  const { error } = await supabase
+    .from("trade_logs")
+    .delete()
+    .eq("id", id);
+  if (error) throw new ApiError(`Failed to delete trade log: ${error.message}`, "SERVER_ERROR");
+}
+
+export async function deleteTradeLogsBatch(ids: number[]): Promise<void> {
+  const { error } = await supabase
+    .from("trade_logs")
+    .delete()
+    .in("id", ids);
+  if (error) throw new ApiError(`Failed to delete trade logs: ${error.message}`, "SERVER_ERROR");
+}
+
 export async function fetchBacktestSessions(limit = 10): Promise<any[]> {
   const { data, error } = await supabase
     .from("backtest_sessions")
@@ -253,6 +278,14 @@ export async function fetchBacktestSessions(limit = 10): Promise<any[]> {
     .limit(limit);
   if (error) throw new ApiError(`Failed to fetch backtest sessions: ${error.message}`, "SERVER_ERROR");
   return data || [];
+}
+
+export async function deleteBacktestSession(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("backtest_sessions")
+    .delete()
+    .eq("id", id);
+  if (error) throw new ApiError(`Failed to delete backtest: ${error.message}`, "SERVER_ERROR");
 }
 
 export async function saveBacktestSession(session: Record<string, any>): Promise<string> {
