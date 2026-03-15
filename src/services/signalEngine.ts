@@ -21,12 +21,12 @@
  *    overbought %K crossing below %D = SELL.
  *
  * 5. CONFLUENCE GATE
- *    Minimum 3 out of 6 indicators must agree on direction.
+ *    Minimum 2 out of 8 indicators must agree on direction.
  *    Below that, signal is suppressed regardless of score.
  *
  * 6. RAISED CONFIDENCE THRESHOLD
- *    Minimum composite score raised from 25 → 45.
- *    Minimum confidence raised to 55%.
+ *    Minimum composite score raised from 25 → 40.
+ *    Minimum confidence raised to 45%.
  *
  * 7. REBALANCED WEIGHTS (total 100)
  *    EMA Cross:   0-20  (was 0-25)
