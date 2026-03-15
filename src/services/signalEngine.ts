@@ -352,7 +352,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
 
   // Check for RSI vs EMA conflict
   if (rsiDirection !== 0 && emaDirection !== 0 && rsiDirection !== emaDirection) {
-    conflictPenalty += 10;
+    conflictPenalty += 5;
   }
 
   // Check for Bollinger vs MACD conflict
