@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Target, RefreshCw } from "lucide-react";
 import { SYMBOLS, type TestTradeResult } from "@/types/engine";
 
@@ -16,10 +16,15 @@ interface TestTradePanelProps {
 
 export function TestTradePanel({ loading, result, onExecute }: TestTradePanelProps) {
   const [accountType, setAccountType] = useState<"demo" | "live">("demo");
-  const [amount, setAmount] = useState(1.0);
+  const [amount, setAmount] = useState(10);
   const [duration, setDuration] = useState(5);
   const [symbol, setSymbol] = useState("R_10");
   const [direction, setDirection] = useState<"" | "BUY" | "SELL">("");
+
+  // Update default amount based on account type
+  useEffect(() => {
+    setAmount(accountType === "demo" ? 10 : 0.35);
+  }, [accountType]);
 
   return (
     <section className="p-6 engine-panel rounded-lg shadow-2xl">

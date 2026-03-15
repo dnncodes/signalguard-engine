@@ -29,7 +29,13 @@ export default function EngineDashboard() {
   return (
     <div className="min-h-screen bg-engine-bg text-engine-text-primary font-sans selection:bg-signal-buy/30">
       <Header marketCount={status.length} wsStatus={wsStatus} />
-      <HeroSection status={status} signals={signals} wsStatus={wsStatus} />
+      <HeroSection
+        status={status}
+        signals={signals}
+        wsStatus={wsStatus}
+        onQuickTrade={testTrade.quickTrade}
+        quickTradeLoading={testTrade.loading}
+      />
       <MarketTicker status={status} />
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">

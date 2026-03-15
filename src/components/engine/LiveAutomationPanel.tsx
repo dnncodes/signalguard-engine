@@ -40,11 +40,16 @@ export function LiveAutomationPanel({
   onValidate,
   onErrorsChange,
 }: LiveAutomationPanelProps) {
-  const [duration, setDuration] = useState(1);
+  const [duration, setDuration] = useState(0); // 0 = unlimited
   const [profitTarget, setProfitTarget] = useState(50);
   const [initialTradeAmount, setInitialTradeAmount] = useState(10);
   const [martingaleMultiplier, setMartingaleMultiplier] = useState(2.2);
   const [maxMartingaleLevel, setMaxMartingaleLevel] = useState(5);
+
+  // Update initial trade amount based on account type
+  useEffect(() => {
+    setInitialTradeAmount(accountType === "demo" ? 10 : 0.35);
+  }, [accountType]);
 
   const params = { duration, profitTarget, initialTradeAmount, martingaleMultiplier, maxMartingaleLevel };
 
@@ -85,10 +90,7 @@ export function LiveAutomationPanel({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <FieldInput label="Duration (Hours)" value={duration} onChange={setDuration} min={1} error={errors.duration} />
-          <FieldInput label="Profit Target ($)" value={profitTarget} onChange={setProfitTarget} step={0.01} min={0} error={errors.profitTarget} />
-        </div>
+        <FieldInput label="Profit Target ($)" value={profitTarget} onChange={setProfitTarget} step={0.01} min={0} error={errors.profitTarget} />
 
         <div className="grid grid-cols-2 gap-4">
           <FieldInput label="Initial Trade Amount ($)" value={initialTradeAmount} onChange={setInitialTradeAmount} step={0.01} min={0.1} error={errors.initialTradeAmount} />
@@ -96,6 +98,11 @@ export function LiveAutomationPanel({
         </div>
 
         <FieldInput label="Max Martingale Level" value={maxMartingaleLevel} onChange={setMaxMartingaleLevel} min={1} max={10} error={errors.maxMartingaleLevel} />
+
+        <FieldInput label="Duration (Hours) — Optional, 0 = Unlimited" value={duration} onChange={setDuration} min={0} error={errors.duration} />
+        <p className="text-[8px] text-engine-text-dim font-mono -mt-3">
+          ⚠️ Duration is advisory only. Engine stops ONLY on profit target or max martingale.
+        </p>
 
         <div className="flex gap-2">
           <button

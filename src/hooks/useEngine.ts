@@ -327,6 +327,8 @@ export function useBacktest() {
       }
 
       // Walk through TIME intervals — exactly 1 trade per 5-minute slot
+      // NOTE: Duration is used as data range only. We do NOT stop because of time elapse.
+      // Only profit target and max martingale level stop execution.
       for (let interval = 0; interval < expectedTrades && !abortRef.current; interval++) {
         if (balance <= 0) break;
         if (config.profitTarget > 0 && balance - config.initialBalance >= config.profitTarget) {
@@ -565,13 +567,18 @@ export function useLiveAutomation() {
 
   const pendingContractsRef = useRef<Map<number, { symbol: string; type: string; amount: number; martingaleLevel: number; openedAt: number }>>(new Map());
   const settleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const configRef = useRef<{ martingaleMultiplier: number; maxMartingaleLevel: number; initialTradeAmount: number; profitTarget: number } | null>(null);
   // Martingale state: consecutiveLosses tracks the chain, nextAmount is pre-computed
   const martingaleRef = useRef({ consecutiveLosses: 0, nextAmount: 0 });
   const settlingRef = useRef(false); // Prevent concurrent settlement processing
   const realtimeChannelRef = useRef<any>(null);
+  // Trade execution lock: prevents new trade while previous is still pending settlement
+  const tradeLockedRef = useRef(false);
+  // Signal queue: holds signal that arrived while trade was locked
+  const signalQueueRef = useRef<SignalCandidate | null>(null);
+  // Track initial balance for profit target calculation
+  const initialBalanceRef = useRef<number | null>(null);
 
   const loadBalance = useCallback(async (acct: "demo" | "live") => {
     setBalanceLoading(true);
@@ -579,9 +586,11 @@ export function useLiveAutomation() {
       const data = await api.fetchBalance(acct);
       setBalance(typeof data.balance === "number" ? data.balance : null);
       setCurrency(data.currency || "USD");
+      return typeof data.balance === "number" ? data.balance : null;
     } catch {
       setBalance(null);
       setCurrency("USD");
+      return null;
     } finally {
       setBalanceLoading(false);
     }
@@ -593,7 +602,7 @@ export function useLiveAutomation() {
       martingaleMultiplier: number; maxMartingaleLevel: number;
     }): Record<string, string> => {
       const errs: Record<string, string> = {};
-      if (config.duration < 1) errs.duration = "Must be at least 1 hour";
+      // Duration is now optional — no validation needed (0 = unlimited)
       if (config.profitTarget < 0) errs.profitTarget = "Cannot be negative";
       if (config.initialTradeAmount < 0.35) errs.initialTradeAmount = "Must be ≥ $0.35";
       if (config.martingaleMultiplier < 1.1 || config.martingaleMultiplier > 5)
@@ -603,7 +612,33 @@ export function useLiveAutomation() {
       return errs;
     }, []);
 
-  // Settle pending contracts — check every 15s, settle after 5min+10s buffer
+  // Check profit target and stop if reached
+  const checkProfitTarget = useCallback(() => {
+    if (!configRef.current || !initialBalanceRef.current) return false;
+    const cfg = configRef.current;
+    if (cfg.profitTarget <= 0) return false; // No profit target set
+
+    // Get current balance from status
+    let currentBal: number | null = null;
+    setStatus((prev) => {
+      if (prev?.currentBalance != null) currentBal = prev.currentBalance;
+      return prev;
+    });
+
+    // Also check from the balance state
+    if (currentBal == null) return false;
+
+    const profit = currentBal - initialBalanceRef.current;
+    if (profit >= cfg.profitTarget) {
+      console.log(`[Automation] 🎯 PROFIT TARGET REACHED: $${profit.toFixed(2)} >= $${cfg.profitTarget}`);
+      toast.success(`🎯 Profit target reached! Net profit: $${profit.toFixed(2)}`);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Settle pending contracts — check every 15s
+  // Settlement window: wait 4min 30s (270s) to settle, leaving 30s gap before next 5min signal
   const settlePendingContracts = useCallback(async () => {
     const pending = pendingContractsRef.current;
     if (pending.size === 0) return;
@@ -618,8 +653,10 @@ export function useLiveAutomation() {
     for (const [contractId, info] of sortedEntries) {
       if (!runningRef.current && !configRef.current) break;
 
-      const CONTRACT_DURATION_MS = 5 * 60 * 1000 + 10 * 1000;
-      if (now - info.openedAt < CONTRACT_DURATION_MS) continue;
+      // SETTLEMENT TIMING: 4 minutes 30 seconds after trade opened
+      // This leaves a ~30s gap for martingale calculation before next 5-min signal
+      const SETTLEMENT_WAIT_MS = 4 * 60 * 1000 + 30 * 1000; // 4m30s
+      if (now - info.openedAt < SETTLEMENT_WAIT_MS) continue;
 
       try {
         const result = await api.settleContract(contractId);
@@ -661,21 +698,44 @@ export function useLiveAutomation() {
               martingaleRef.current = { consecutiveLosses: 0, nextAmount: cfg.initialTradeAmount };
               console.log(`[Martingale] WIN → reset to $${cfg.initialTradeAmount.toFixed(2)}`);
             } else {
-              // LOSS → increment consecutive losses, multiply amount by 2.2
+              // LOSS → increment consecutive losses, multiply amount by multiplier
               const newConsecutive = martingaleRef.current.consecutiveLosses + 1;
               if (newConsecutive >= cfg.maxMartingaleLevel) {
                 console.log(`[Martingale] STOP → ${newConsecutive} consecutive losses (max: ${cfg.maxMartingaleLevel})`);
                 toast.error(`🛑 Max martingale level (${cfg.maxMartingaleLevel}) reached — stopping automation`);
                 settlingRef.current = false;
+                tradeLockedRef.current = false;
                 stopAutomation();
                 return;
               }
               // Next amount = current trade amount × multiplier
-              // e.g. $10 → $22 → $48.40 → $106.48 → $234.26
               const nextAmount = info.amount * cfg.martingaleMultiplier;
               martingaleRef.current = { consecutiveLosses: newConsecutive, nextAmount };
               console.log(`[Martingale] LOSS #${newConsecutive} → next trade: $${nextAmount.toFixed(2)} (was $${info.amount.toFixed(2)} × ${cfg.martingaleMultiplier})`);
             }
+
+            // Check profit target after settlement
+            if (checkProfitTarget()) {
+              settlingRef.current = false;
+              tradeLockedRef.current = false;
+              stopAutomation();
+              return;
+            }
+          }
+
+          // ── UNLOCK trade execution after settlement ──
+          tradeLockedRef.current = false;
+          console.log(`[Automation] Trade lock released after settlement of contract #${contractId}`);
+
+          // If there's a queued signal waiting, execute it now with correct martingale
+          if (signalQueueRef.current && runningRef.current) {
+            const queuedSignal = signalQueueRef.current;
+            signalQueueRef.current = null;
+            console.log(`[Automation] Executing queued signal: ${queuedSignal.type} ${SYMBOLS[queuedSignal.symbol]}`);
+            // Small delay to ensure state is fully updated
+            setTimeout(() => {
+              if (runningRef.current) executeTrade(queuedSignal);
+            }, 2000);
           }
 
           loadBalance(accountType);
@@ -684,18 +744,33 @@ export function useLiveAutomation() {
         console.warn(`Failed to settle ${contractId}:`, err);
         if (now - info.openedAt > 10 * 60 * 1000) {
           pending.delete(contractId);
+          tradeLockedRef.current = false; // Release lock on stale contracts
         }
       }
     }
     settlingRef.current = false;
-  }, [accountType, loadBalance]);
+  }, [accountType, loadBalance, checkProfitTarget]);
 
   // Execute a trade based on signal
   const executeTrade = useCallback(async (signal: SignalCandidate) => {
-    if (!runningRef.current || !configRef.current) return;
+    if (!runningRef.current || !configRef.current) {
+      console.log(`[Automation] Skipping trade — running: ${runningRef.current}, config: ${!!configRef.current}`);
+      return;
+    }
+
+    // CRITICAL: Check if previous trade is still pending settlement
+    if (tradeLockedRef.current) {
+      console.log(`[Automation] Trade LOCKED — previous trade not yet settled. Queuing signal: ${signal.type} ${SYMBOLS[signal.symbol]}`);
+      signalQueueRef.current = signal; // Queue the signal for execution after settlement
+      toast.info(`⏳ Signal queued — waiting for previous trade to settle before executing`);
+      return;
+    }
 
     const tradeAmount = Math.max(martingaleRef.current.nextAmount, 0.35);
     const contractType = signal.type === "BUY" ? "CALL" : "PUT";
+
+    // Lock trade execution
+    tradeLockedRef.current = true;
 
     try {
       const result = await api.executeTrade({
@@ -734,6 +809,8 @@ export function useLiveAutomation() {
     } catch (err) {
       console.error("[Automation] Trade execution failed:", err);
       toast.error(`Auto-trade failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      // IMPORTANT: Release lock on trade failure so next signal can execute
+      tradeLockedRef.current = false;
     }
   }, []);
 
@@ -746,23 +823,28 @@ export function useLiveAutomation() {
       setErrors(errs);
       if (Object.keys(errs).length > 0) return;
 
+      // Fetch and record initial balance for profit target calculation
+      const bal = await loadBalance(accountType);
+      initialBalanceRef.current = bal;
+
       runningRef.current = true;
       configRef.current = params;
       martingaleRef.current = { consecutiveLosses: 0, nextAmount: params.initialTradeAmount };
+      tradeLockedRef.current = false;
+      signalQueueRef.current = null;
       setIsRunning(true);
       setStatus({
         running: true,
         accountType,
+        initialBalance: bal ?? undefined,
         trades: [],
         totalProfit: 0,
         winCount: 0,
         lossCount: 0,
       });
 
-      // CRITICAL FIX: Instead of creating a SEPARATE signal generator (which picks
-      // different symbols than the one displayed in the UI), subscribe to the SAME
-      // signals table that the main signal engine writes to. This guarantees the
-      // automation trades the EXACT signal shown in the UI.
+      // Subscribe to the SAME signals table that the main signal engine writes to.
+      // This guarantees the automation trades the EXACT signal shown in the UI.
       const channel = supabase
         .channel("automation-signals")
         .on(
@@ -786,22 +868,27 @@ export function useLiveAutomation() {
             executeTrade(signal);
           }
         )
-        .subscribe();
+        .subscribe((status) => {
+          console.log(`[Automation] Realtime channel status: ${status}`);
+          // CRITICAL FIX: If the channel disconnects, try to re-subscribe
+          if (status === "CHANNEL_ERROR" && runningRef.current) {
+            console.warn("[Automation] Channel error — will attempt reconnect");
+            toast.warning("⚠️ Signal channel reconnecting...");
+          }
+        });
 
       realtimeChannelRef.current = channel;
 
-      // Settlement checker every 15 seconds
-      settleTimerRef.current = setInterval(() => settlePendingContracts(), 15 * 1000);
+      // Settlement checker every 10 seconds (more frequent for tighter timing)
+      settleTimerRef.current = setInterval(() => settlePendingContracts(), 10 * 1000);
 
-      // Auto-stop after duration
-      stopTimerRef.current = setTimeout(() => {
-        toast.info("⏰ Automation duration reached — stopping");
-        stopAutomation();
-      }, params.duration * 60 * 60 * 1000);
-
-      toast.success(`🚀 Automation started — will trade every signal for ${params.duration}h`);
+      // NO duration-based auto-stop. Only profit target and martingale stop the engine.
+      const durationMsg = params.duration > 0
+        ? ` (duration ${params.duration}h is advisory only — engine runs until profit target or manual stop)`
+        : "";
+      toast.success(`🚀 Automation started — will trade every signal${durationMsg}`);
     },
-    [accountType, validate, executeTrade, settlePendingContracts]
+    [accountType, validate, executeTrade, settlePendingContracts, loadBalance]
   );
 
   const stopAutomation = useCallback(async () => {
@@ -816,10 +903,9 @@ export function useLiveAutomation() {
       clearInterval(settleTimerRef.current);
       settleTimerRef.current = null;
     }
-    if (stopTimerRef.current) {
-      clearTimeout(stopTimerRef.current);
-      stopTimerRef.current = null;
-    }
+
+    tradeLockedRef.current = false;
+    signalQueueRef.current = null;
 
     // Final settle attempt
     await settlePendingContracts();
@@ -838,7 +924,6 @@ export function useLiveAutomation() {
     return () => {
       if (realtimeChannelRef.current) supabase.removeChannel(realtimeChannelRef.current);
       if (settleTimerRef.current) clearInterval(settleTimerRef.current);
-      if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     };
   }, []);
 
@@ -849,12 +934,27 @@ export function useLiveAutomation() {
   };
 }
 
-// ─── useTestTrade ────────────────────────────────────────────
+// ─── useTestTrade (with martingale support) ──────────────────
 
 export function useTestTrade() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TestTradeResult | null>(null);
   const settleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Martingale state for test trades
+  const martingaleRef = useRef({ consecutiveLosses: 0, baseAmount: 10 });
+
+  // Get current martingale-adjusted amount
+  const getMartingaleAmount = useCallback((accountType: "demo" | "live") => {
+    const baseAmount = accountType === "demo" ? 10 : 0.35;
+    martingaleRef.current.baseAmount = baseAmount;
+    if (martingaleRef.current.consecutiveLosses === 0) return baseAmount;
+    // Apply 2.2x multiplier for each consecutive loss, max 5 levels
+    let amount = baseAmount;
+    for (let i = 0; i < Math.min(martingaleRef.current.consecutiveLosses, 5); i++) {
+      amount *= 2.2;
+    }
+    return Math.round(amount * 100) / 100;
+  }, []);
 
   const execute = useCallback(
     async (params: {
@@ -905,11 +1005,26 @@ export function useTestTrade() {
             if (settled.settled) {
               if (settleTimerRef.current) clearInterval(settleTimerRef.current);
               const profit = settled.profit || 0;
+              const isWin = profit >= 0;
+
               setResult((prev) =>
-                prev ? { ...prev, result: profit >= 0 ? "WIN" : "LOSS", profit } : prev
+                prev ? { ...prev, result: isWin ? "WIN" : "LOSS", profit } : prev
               );
-              toast[profit >= 0 ? "success" : "error"](
-                `Contract #${data.contractId} settled: ${profit >= 0 ? "WIN" : "LOSS"} ($${profit.toFixed(2)})`
+
+              // Update martingale state based on result
+              if (isWin) {
+                martingaleRef.current.consecutiveLosses = 0;
+                console.log(`[TestTrade Martingale] WIN → reset consecutive losses`);
+              } else {
+                martingaleRef.current.consecutiveLosses = Math.min(
+                  martingaleRef.current.consecutiveLosses + 1,
+                  5
+                );
+                console.log(`[TestTrade Martingale] LOSS → consecutive: ${martingaleRef.current.consecutiveLosses}`);
+              }
+
+              toast[isWin ? "success" : "error"](
+                `Contract #${data.contractId} settled: ${isWin ? "WIN" : "LOSS"} ($${profit.toFixed(2)})`
               );
             }
           } catch {
@@ -930,13 +1045,32 @@ export function useTestTrade() {
       }
     }, []);
 
+  // Quick trade: uses latest signal direction, auto-computed martingale amount
+  const quickTrade = useCallback(
+    async (params: {
+      accountType: "demo" | "live";
+      symbol: string;
+      direction: "BUY" | "SELL";
+    }) => {
+      const amount = getMartingaleAmount(params.accountType);
+      await execute({
+        accountType: params.accountType,
+        amount,
+        symbol: params.symbol,
+        durationMinutes: 5,
+        direction: params.direction,
+      });
+    },
+    [execute, getMartingaleAmount]
+  );
+
   useEffect(() => {
     return () => {
       if (settleTimerRef.current) clearInterval(settleTimerRef.current);
     };
   }, []);
 
-  return { loading, result, execute };
+  return { loading, result, execute, quickTrade, getMartingaleAmount };
 }
 
 // ─── useTradeHistory ─────────────────────────────────────────
