@@ -665,7 +665,7 @@ export function useLiveAutomation() {
       if (now - info.openedAt < SETTLEMENT_WAIT_MS) continue;
 
       try {
-        const result = await api.settleContract(contractId, accountType);
+        const result = await api.settleContract(contractId, accountTypeRef.current);
         if (result.settled) {
           pending.delete(contractId);
           const profit = result.profit || 0;
