@@ -233,51 +233,76 @@ function formatSettlementTelegram(contractId: number, symbol: string, profit: nu
   return lines.join("\n");
 }
 
-// ─── Account Switching Helper ────────────────────────────────
-// Deriv API: after initial authorize, we need to switch to the correct account
-// (demo = virtual, live = real) by re-authorizing with that account's token.
-// The `authorize` response contains `account_list` with tokens for each account.
+// ─── Account Authorization (ROBUST) ─────────────────────────
+// Strategy:
+//   1. If requesting "live" and DERIV_LIVE_API_TOKEN exists → authorize directly with it
+//   2. If requesting "demo" and DERIV_API_TOKEN exists → authorize directly with it  
+//   3. Otherwise try account_list switching (requires admin scope)
+//   4. NEVER silently fall back to wrong account type — return explicit error
 
-async function switchToAccount(
+async function authorizeForAccount(
   ws: WebSocket,
-  initialAuth: any,
   requestedAccountType: "demo" | "live"
-): Promise<any> {
+): Promise<{ auth: any; actualType: "demo" | "live" }> {
+  const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN"); // primary token (usually demo)
+  const DERIV_LIVE_TOKEN = Deno.env.get("DERIV_LIVE_API_TOKEN"); // dedicated live token
+  
+  // Strategy 1: Use dedicated token for the requested account type
+  if (requestedAccountType === "live" && DERIV_LIVE_TOKEN) {
+    console.log("[deriv-trading] Using dedicated DERIV_LIVE_API_TOKEN for live account");
+    const authRes = await derivRequest(ws, { authorize: DERIV_LIVE_TOKEN });
+    if (!authRes.authorize) throw new Error("Live token authorization failed");
+    const isVirtual = !!authRes.authorize.is_virtual;
+    if (isVirtual) {
+      throw new Error("DERIV_LIVE_API_TOKEN is a demo token — please update it with a real account API token");
+    }
+    return { auth: authRes.authorize, actualType: "live" };
+  }
+
+  // Strategy 2: Authorize with default token
+  if (!DERIV_TOKEN) throw new Error("DERIV_API_TOKEN not configured");
+  
+  const authRes = await derivRequest(ws, { authorize: DERIV_TOKEN });
+  if (!authRes.authorize) throw new Error("Deriv authorization failed");
+  
+  const initialAuth = authRes.authorize;
   const isCurrentVirtual = !!initialAuth.is_virtual;
   const wantVirtual = requestedAccountType === "demo";
 
-  // If already on the correct account type, return as-is
+  // If default token already matches the requested type, we're done
   if (isCurrentVirtual === wantVirtual) {
-    console.log(`[deriv-trading] Already on ${requestedAccountType} account: ${initialAuth.loginid}`);
-    return initialAuth;
+    console.log(`[deriv-trading] Default token matches ${requestedAccountType}: ${initialAuth.loginid}`);
+    return { auth: initialAuth, actualType: requestedAccountType };
   }
 
-  // Find the target account from account_list
+  // Strategy 3: Try account_list switching (requires admin scope on token)
   const accountList = initialAuth.account_list || [];
   const targetAccount = accountList.find((acc: any) =>
     wantVirtual ? acc.is_virtual === 1 : acc.is_virtual === 0
   );
 
-  if (!targetAccount) {
-    console.warn(`[deriv-trading] No ${requestedAccountType} account found in account_list. Using default.`);
-    return initialAuth;
-  }
-
-  // The account_list contains tokens only if the API token has "admin" scope.
-  // If token is available, re-authorize with it. Otherwise use loginid param.
-  if (targetAccount.token) {
-    console.log(`[deriv-trading] Switching to ${requestedAccountType} account: ${targetAccount.loginid} using token`);
+  if (targetAccount?.token) {
+    console.log(`[deriv-trading] Switching to ${requestedAccountType} via account_list: ${targetAccount.loginid}`);
     const switchRes = await derivRequest(ws, { authorize: targetAccount.token });
     if (switchRes.authorize) {
-      console.log(`[deriv-trading] Switched OK → ${switchRes.authorize.loginid} | Balance: ${switchRes.authorize.balance} ${switchRes.authorize.currency}`);
-      return switchRes.authorize;
+      const switchedVirtual = !!switchRes.authorize.is_virtual;
+      console.log(`[deriv-trading] Switched → ${switchRes.authorize.loginid} (${switchedVirtual ? "demo" : "live"}) | Balance: ${switchRes.authorize.balance} ${switchRes.authorize.currency}`);
+      return { auth: switchRes.authorize, actualType: switchedVirtual ? "demo" : "live" };
     }
-    throw new Error(`Failed to switch to ${requestedAccountType} account`);
   }
 
-  // Fallback: if no per-account token, log a warning
-  console.warn(`[deriv-trading] No token for ${targetAccount.loginid} — ensure API token has 'admin' or 'read' scope. Using default account.`);
-  return initialAuth;
+  // Strategy 4: FAIL explicitly — do NOT silently use wrong account
+  if (requestedAccountType === "live") {
+    const msg = `Cannot switch to live account. Your API token doesn't have 'admin' scope for account switching. ` +
+      `Please either: (1) Create a new API token with 'Admin' scope on deriv.com, or ` +
+      `(2) Add a dedicated live account token as DERIV_LIVE_API_TOKEN secret.`;
+    console.error(`[deriv-trading] ${msg}`);
+    throw new Error(msg);
+  }
+
+  // For demo requests when we're on live, same issue but reversed
+  console.warn(`[deriv-trading] Cannot switch to demo from live account. Using current: ${initialAuth.loginid}`);
+  return { auth: initialAuth, actualType: isCurrentVirtual ? "demo" : "live" };
 }
 
 serve(async (req: Request) => {
@@ -310,6 +335,27 @@ serve(async (req: Request) => {
       return jsonResponse({ success: true, message: "Signal sent to Telegram" });
     }
 
+    // Determine requested account type from query param or request body
+    let requestedAccountType: "demo" | "live" = "demo"; // default to demo for safety
+    const accountTypeParam = url.searchParams.get("account_type");
+    if (accountTypeParam === "demo" || accountTypeParam === "live") {
+      requestedAccountType = accountTypeParam;
+    }
+
+    // For POST requests, also check the body for account_type
+    let parsedBody: any = null;
+    if (req.method === "POST") {
+      try {
+        const bodyText = await req.text();
+        parsedBody = bodyText ? JSON.parse(bodyText) : {};
+      } catch {
+        parsedBody = {};
+      }
+      if (parsedBody.account_type === "demo" || parsedBody.account_type === "live") {
+        requestedAccountType = parsedBody.account_type;
+      }
+    }
+
     let ws: WebSocket;
     try {
       ws = await connectDeriv();
@@ -318,39 +364,18 @@ serve(async (req: Request) => {
     }
 
     try {
-      const authRes = await derivRequest(ws, { authorize: DERIV_TOKEN });
-      if (!authRes.authorize) {
-        throw new Error("Deriv authorization failed");
-      }
+      // ROBUST authorization — will fail explicitly if can't switch to requested account
+      const { auth: acct, actualType } = await authorizeForAccount(ws, requestedAccountType);
 
-      // Determine requested account type from query param or request body
-      let requestedAccountType: "demo" | "live" | null = null;
-      const accountTypeParam = url.searchParams.get("account_type");
-      if (accountTypeParam === "demo" || accountTypeParam === "live") {
-        requestedAccountType = accountTypeParam;
-      }
+      console.log(`[deriv-trading] Authorized: ${acct.loginid} (${actualType}) | Balance: ${acct.balance} ${acct.currency} | Action: ${action} | Requested: ${requestedAccountType}`);
 
-      // For POST requests, also check the body for account_type
-      let parsedBody: any = null;
-      if (req.method === "POST") {
-        try {
-          const bodyText = await req.text();
-          parsedBody = bodyText ? JSON.parse(bodyText) : {};
-        } catch {
-          parsedBody = {};
-        }
-        if (!requestedAccountType && (parsedBody.account_type === "demo" || parsedBody.account_type === "live")) {
-          requestedAccountType = parsedBody.account_type;
-        }
+      // INTEGRITY CHECK: Ensure we're on the correct account type
+      if (actualType !== requestedAccountType) {
+        return errorResponse(
+          `Account type mismatch: requested ${requestedAccountType} but authorized as ${actualType} (${acct.loginid}). Check your API token configuration.`,
+          400
+        );
       }
-
-      // Switch to the correct account if requested
-      let acct = authRes.authorize;
-      if (requestedAccountType) {
-        acct = await switchToAccount(ws, acct, requestedAccountType);
-      }
-
-      console.log(`[deriv-trading] Authorized: ${acct.loginid} (${acct.is_virtual ? "demo" : "live"}) | Balance: ${acct.balance} ${acct.currency} | Action: ${action}`);
 
       // ── BALANCE ──
       if (action === "balance") {
@@ -362,6 +387,7 @@ serve(async (req: Request) => {
           currency: bal.currency ?? acct.currency,
           loginid: acct.loginid,
           is_virtual: !!acct.is_virtual,
+          account_type: actualType,
         });
       }
 
@@ -401,7 +427,7 @@ serve(async (req: Request) => {
         });
 
         const buyData = buyRes.buy;
-        console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price} | Account: ${acct.loginid}`);
+        console.log(`[deriv-trading] Bought contract ${buyData.contract_id} | Price: ${buyData.buy_price} | Account: ${acct.loginid} (${actualType})`);
 
         await supabase.from("trade_logs").insert({
           symbol,
@@ -413,7 +439,7 @@ serve(async (req: Request) => {
           transaction_id: buyData.transaction_id,
           balance_after: buyData.balance_after,
           duration_minutes: dur,
-          account_type: acct.is_virtual ? "demo" : "live",
+          account_type: actualType, // Use ACTUAL verified type, not requested
           currency: acct.currency,
           source: source || "manual",
           result: "PENDING",
@@ -421,6 +447,7 @@ serve(async (req: Request) => {
             payout: buyData.payout,
             longcode: buyData.longcode,
             purchase_time: buyData.purchase_time,
+            loginid: acct.loginid,
           },
         });
 
@@ -431,6 +458,8 @@ serve(async (req: Request) => {
           payout: buyData.payout,
           balance_after: buyData.balance_after,
           longcode: buyData.longcode,
+          account_type: actualType,
+          loginid: acct.loginid,
         });
       }
 
@@ -485,6 +514,7 @@ serve(async (req: Request) => {
               profit,
               balance_after: sellData.balance_after,
               status: "SOLD",
+              account_type: actualType,
             });
           } catch (sellErr) {
             console.warn(`[deriv-trading] Cannot sell ${contract_id}: ${sellErr.message}`);
@@ -524,6 +554,7 @@ serve(async (req: Request) => {
             status: contract.status,
             sell_price: contract.sell_price || contract.bid_price,
             balance_after: balanceAfter,
+            account_type: actualType,
           });
         }
 
@@ -535,6 +566,7 @@ serve(async (req: Request) => {
           profit: contract.profit,
           is_valid_to_sell: contract.is_valid_to_sell,
           date_expiry: contract.date_expiry,
+          account_type: actualType,
         });
       }
 
@@ -568,6 +600,7 @@ serve(async (req: Request) => {
           success: true,
           sold_for: sellData.sold_for,
           balance_after: sellData.balance_after,
+          account_type: actualType,
         });
       }
 

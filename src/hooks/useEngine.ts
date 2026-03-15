@@ -558,11 +558,17 @@ export function useBacktest() {
 
 export function useLiveAutomation() {
   const [isRunning, setIsRunning] = useState(false);
+  // accountType ref for stable access in callbacks without stale closures
+  const accountTypeRef = useRef<"demo" | "live">("demo");
   const [status, setStatus] = useState<LiveAutomationStatus | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [currency, setCurrency] = useState("USD");
   const [balanceLoading, setBalanceLoading] = useState(false);
-  const [accountType, setAccountType] = useState<"demo" | "live">("demo");
+  const [accountType, setAccountTypeState] = useState<"demo" | "live">("demo");
+  const setAccountType = useCallback((val: "demo" | "live") => {
+    accountTypeRef.current = val;
+    setAccountTypeState(val);
+  }, []);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const pendingContractsRef = useRef<Map<number, { symbol: string; type: string; amount: number; martingaleLevel: number; openedAt: number }>>(new Map());
@@ -659,7 +665,7 @@ export function useLiveAutomation() {
       if (now - info.openedAt < SETTLEMENT_WAIT_MS) continue;
 
       try {
-        const result = await api.settleContract(contractId, accountType);
+        const result = await api.settleContract(contractId, accountTypeRef.current);
         if (result.settled) {
           pending.delete(contractId);
           const profit = result.profit || 0;
@@ -738,7 +744,7 @@ export function useLiveAutomation() {
             }, 2000);
           }
 
-          loadBalance(accountType);
+          loadBalance(accountTypeRef.current);
         }
       } catch (err) {
         console.warn(`Failed to settle ${contractId}:`, err);
@@ -749,7 +755,7 @@ export function useLiveAutomation() {
       }
     }
     settlingRef.current = false;
-  }, [accountType, loadBalance, checkProfitTarget]);
+  }, [loadBalance, checkProfitTarget]);
 
   // Execute a trade based on signal
   const executeTrade = useCallback(async (signal: SignalCandidate) => {
@@ -780,7 +786,7 @@ export function useLiveAutomation() {
         duration: 5,
         durationUnit: "m",
         source: "automation",
-        accountType,
+        accountType: accountTypeRef.current,
       });
 
       pendingContractsRef.current.set(result.contract_id, {
@@ -825,7 +831,7 @@ export function useLiveAutomation() {
       if (Object.keys(errs).length > 0) return;
 
       // Fetch and record initial balance for profit target calculation
-      const bal = await loadBalance(accountType);
+      const bal = await loadBalance(accountTypeRef.current);
       initialBalanceRef.current = bal;
 
       runningRef.current = true;
@@ -889,7 +895,7 @@ export function useLiveAutomation() {
         : "";
       toast.success(`🚀 Automation started — will trade every signal${durationMsg}`);
     },
-    [accountType, validate, executeTrade, settlePendingContracts, loadBalance]
+    [validate, executeTrade, settlePendingContracts, loadBalance]
   );
 
   const stopAutomation = useCallback(async () => {
@@ -913,8 +919,8 @@ export function useLiveAutomation() {
 
     setStatus((prev) => (prev ? { ...prev, running: false } : null));
     toast.info("Automation stopped");
-    loadBalance(accountType);
-  }, [accountType, loadBalance, settlePendingContracts]);
+    loadBalance(accountTypeRef.current);
+  }, [loadBalance, settlePendingContracts]);
 
   useEffect(() => {
     setBalance(null);
