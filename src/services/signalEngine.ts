@@ -314,28 +314,34 @@ export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandid
   // ════════════════════════════════════════════════════════════
 
   let type: "BUY" | "SELL" = rawType;
+  let wasConflictSuppressed = false;
+  let wasConfluenceGated = false;
 
   if (rsiHardLock) {
     if (rawType !== rsiHardLock) {
-      // RSI extreme contradicts the voted direction → KILL the signal
+      // RSI extreme contradicts the voted direction → force RSI direction instead of killing
       console.log(
-        `[SignalEngine] CONFLICT SUPPRESSED: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — signal killed`
+        `[SignalEngine] CONFLICT: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — forcing ${rsiHardLock}`
       );
-      return null;
+      type = rsiHardLock;
+      wasConflictSuppressed = true;
+      conflictPenalty += 20; // Heavy penalty but don't kill
+    } else {
+      type = rsiHardLock;
     }
-    type = rsiHardLock;
   }
 
   // ════════════════════════════════════════════════════════════
-  // STEP 4: CONFLUENCE MINIMUM — require ≥3 agreeing indicators
+  // STEP 4: CONFLUENCE CHECK — track agreement (no longer kills)
   // ════════════════════════════════════════════════════════════
 
   const MIN_CONFLUENCE = 2;
   if (dominantCount < MIN_CONFLUENCE) {
     console.log(
-      `[SignalEngine] CONFLUENCE GATE: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — need ${MIN_CONFLUENCE}. Skipping.`
+      `[SignalEngine] CONFLUENCE LOW: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — below ${MIN_CONFLUENCE}`
     );
-    return null;
+    wasConfluenceGated = true;
+    conflictPenalty += 10; // Penalize but don't kill
   }
 
   // ════════════════════════════════════════════════════════════
