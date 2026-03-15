@@ -346,7 +346,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
 
   // Check for RSI vs Pattern conflict (the exact bug from the Telegram example)
   if (rsiDirection !== 0 && engulfingDirection !== 0 && rsiDirection !== engulfingDirection) {
-    conflictPenalty += 15;
+    conflictPenalty += 8;
     console.log(`[SignalEngine] CONFLICT: RSI (${rsiSignal}) vs Engulfing (${engulfing?.type}) — penalty -15`);
   }
 
