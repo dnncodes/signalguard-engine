@@ -744,7 +744,7 @@ export function useLiveAutomation() {
             }, 2000);
           }
 
-          loadBalance(accountType);
+          loadBalance(accountTypeRef.current);
         }
       } catch (err) {
         console.warn(`Failed to settle ${contractId}:`, err);
@@ -755,7 +755,7 @@ export function useLiveAutomation() {
       }
     }
     settlingRef.current = false;
-  }, [accountType, loadBalance, checkProfitTarget]);
+  }, [loadBalance, checkProfitTarget]);
 
   // Execute a trade based on signal
   const executeTrade = useCallback(async (signal: SignalCandidate) => {
