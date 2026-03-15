@@ -831,7 +831,7 @@ export function useLiveAutomation() {
       if (Object.keys(errs).length > 0) return;
 
       // Fetch and record initial balance for profit target calculation
-      const bal = await loadBalance(accountType);
+      const bal = await loadBalance(accountTypeRef.current);
       initialBalanceRef.current = bal;
 
       runningRef.current = true;
