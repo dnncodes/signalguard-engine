@@ -183,7 +183,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
           <StatCard
             icon={<Zap size={13} />}
             label="Engine"
-            value="v3.0"
+            value="v3.1"
             sub="Multi-symbol"
             accent="buy"
           />
