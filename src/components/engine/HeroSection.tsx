@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { Activity, BarChart3, TrendingUp, Zap, Target, Clock } from "lucide-react";
+import { Activity, BarChart3, TrendingUp, Zap, Target, Clock, Play } from "lucide-react";
 import type { MarketStatus, Signal } from "@/types/engine";
 import { SYMBOLS } from "@/types/engine";
 
@@ -7,10 +7,13 @@ interface HeroSectionProps {
   status: MarketStatus[];
   signals: Signal[];
   wsStatus: string;
+  onQuickTrade?: (params: { accountType: "demo" | "live"; symbol: string; direction: "BUY" | "SELL" }) => void;
+  quickTradeLoading?: boolean;
 }
 
-export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
+export function HeroSection({ status, signals, wsStatus, onQuickTrade, quickTradeLoading }: HeroSectionProps) {
   const [tick, setTick] = useState(0);
+  const [quickTradeAccount, setQuickTradeAccount] = useState<"demo" | "live">("demo");
 
   useEffect(() => {
     const t = setInterval(() => setTick((p) => p + 1), 3000);
@@ -45,6 +48,15 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
   }, [stats.latestSignal, tick]);
 
   const isBuy = stats.latestSignal?.type === "BUY";
+
+  const handleQuickTrade = () => {
+    if (!stats.latestSignal || !onQuickTrade) return;
+    onQuickTrade({
+      accountType: quickTradeAccount,
+      symbol: stats.latestSignal.symbol,
+      direction: stats.latestSignal.type,
+    });
+  };
 
   return (
     <section className="relative overflow-hidden border-b border-engine-border">
@@ -82,7 +94,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
             </p>
           </div>
 
-          {/* Latest Signal Card — polished */}
+          {/* Latest Signal Card — with Quick Trade button */}
           {stats.latestSignal && (
             <div className={`shrink-0 relative overflow-hidden rounded-xl border backdrop-blur-sm ${
               isBuy
@@ -121,7 +133,7 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-4 text-[9px] font-mono text-engine-text-muted">
+                <div className="flex items-center gap-4 text-[9px] font-mono text-engine-text-muted mb-3">
                   <span className="flex items-center gap-1">
                     <span className="text-engine-text-dim">Score</span>
                     <b className={isBuy ? "text-signal-buy" : "text-signal-sell"}>{stats.latestSignal.score || "—"}</b>
@@ -147,6 +159,34 @@ export function HeroSection({ status, signals, wsStatus }: HeroSectionProps) {
                     </div>
                   </span>
                 </div>
+
+                {/* Quick Trade Button */}
+                {onQuickTrade && (
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={quickTradeAccount}
+                      onChange={(e) => setQuickTradeAccount(e.target.value as "demo" | "live")}
+                      className="engine-input text-[9px] py-1 px-2 w-16"
+                    >
+                      <option value="demo">Demo</option>
+                      <option value="live">Live</option>
+                    </select>
+                    <button
+                      onClick={handleQuickTrade}
+                      disabled={quickTradeLoading}
+                      className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md text-[9px] font-bold uppercase tracking-widest transition-all ${
+                        quickTradeLoading
+                          ? "bg-engine-surface text-engine-text-dim cursor-not-allowed"
+                          : isBuy
+                          ? "bg-signal-buy text-engine-bg hover:opacity-90 active:scale-[0.97] shadow-md shadow-signal-buy/20"
+                          : "bg-signal-sell text-engine-bg hover:opacity-90 active:scale-[0.97] shadow-md shadow-signal-sell/20"
+                      }`}
+                    >
+                      <Play size={10} />
+                      {quickTradeLoading ? "Placing..." : `Quick ${stats.latestSignal.type}`}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
