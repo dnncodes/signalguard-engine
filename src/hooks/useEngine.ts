@@ -1002,7 +1002,7 @@ export function useTestTrade() {
 
         const attemptSettle = async () => {
           try {
-            const settled = await api.settleContract(data.contractId);
+            const settled = await api.settleContract(data.contractId, params.accountType);
             if (settled.settled) {
               if (settleTimerRef.current) clearInterval(settleTimerRef.current);
               const profit = settled.profit || 0;
