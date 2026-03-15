@@ -309,30 +309,26 @@ export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandid
   const dominantCount = rawType === "BUY" ? buyCount : sellCount;
 
   // ════════════════════════════════════════════════════════════
-  // STEP 3: RSI HARD LOCK — override direction if RSI is extreme
-  // This is the CRITICAL fix: RSI=3.1 can NEVER produce a SELL
+  // STEP 3: CONFLICT PENALTY INIT + RSI HARD LOCK
   // ════════════════════════════════════════════════════════════
 
+  let conflictPenalty = 0;
   let type: "BUY" | "SELL" = rawType;
-  let wasConflictSuppressed = false;
-  let wasConfluenceGated = false;
 
   if (rsiHardLock) {
     if (rawType !== rsiHardLock) {
-      // RSI extreme contradicts the voted direction → force RSI direction instead of killing
       console.log(
         `[SignalEngine] CONFLICT: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — forcing ${rsiHardLock}`
       );
       type = rsiHardLock;
-      wasConflictSuppressed = true;
-      conflictPenalty += 20; // Heavy penalty but don't kill
+      conflictPenalty += 20;
     } else {
       type = rsiHardLock;
     }
   }
 
   // ════════════════════════════════════════════════════════════
-  // STEP 4: CONFLUENCE CHECK — track agreement (no longer kills)
+  // STEP 4: CONFLUENCE CHECK — penalize low agreement but never kill
   // ════════════════════════════════════════════════════════════
 
   const MIN_CONFLUENCE = 2;
@@ -340,15 +336,12 @@ export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandid
     console.log(
       `[SignalEngine] CONFLUENCE LOW: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — below ${MIN_CONFLUENCE}`
     );
-    wasConfluenceGated = true;
-    conflictPenalty += 10; // Penalize but don't kill
+    conflictPenalty += 10;
   }
 
   // ════════════════════════════════════════════════════════════
   // STEP 5: CONFLICT PENALTY — reduce score if strong disagreement
   // ════════════════════════════════════════════════════════════
-
-  let conflictPenalty = 0;
 
   // Check for RSI vs Pattern conflict (the exact bug from the Telegram example)
   if (rsiDirection !== 0 && engulfingDirection !== 0 && rsiDirection !== engulfingDirection) {
