@@ -1,12 +1,15 @@
 /**
- * Technical Indicators Module
+ * Technical Indicators Module v3.1
  * 
  * Pure functions for calculating trading indicators:
  * - EMA (Exponential Moving Average)
- * - RSI (Relative Strength Index)
+ * - RSI (Relative Strength Index) — Wilder smoothing
  * - MACD (Moving Average Convergence Divergence)
  * - ATR (Average True Range)
  * - EMA Slope (trend momentum)
+ * - EMA Gap (percentage distance between two EMAs)
+ * - Bollinger Bands (mean-reversion / breakout detection)
+ * - Stochastic Oscillator (%K / %D momentum)
  */
 
 // ─── EMA ─────────────────────────────────────────────────────
@@ -74,19 +77,16 @@ export function calculateATR(prices: number[], period = 14): number[] {
   const atr: number[] = new Array(prices.length).fill(0);
   if (prices.length < 2) return atr;
 
-  // For tick data, true range = |current - previous|
   const trueRanges: number[] = [0];
   for (let i = 1; i < prices.length; i++) {
     trueRanges.push(Math.abs(prices[i] - prices[i - 1]));
   }
 
-  // Initial ATR = simple average of first 'period' true ranges
   if (prices.length >= period + 1) {
     let sum = 0;
     for (let i = 1; i <= period; i++) sum += trueRanges[i];
     atr[period] = sum / period;
 
-    // Smoothed ATR
     for (let i = period + 1; i < prices.length; i++) {
       atr[i] = (atr[i - 1] * (period - 1) + trueRanges[i]) / period;
     }
@@ -114,4 +114,81 @@ export function calculateEMAGap(ema9: number[], ema21: number[], prices: number[
     if (price === 0 || ema21[i] === 0) return 0;
     return ((ema9[i] - ema21[i]) / price) * 100;
   });
+}
+
+// ─── Bollinger Bands ─────────────────────────────────────────
+// Returns upper, middle (SMA), lower bands and %B position
+
+export interface BollingerBands {
+  upper: number[];
+  middle: number[];
+  lower: number[];
+  percentB: number[];   // (price - lower) / (upper - lower), 0-1 = inside bands
+  bandwidth: number[];  // (upper - lower) / middle, volatility measure
+}
+
+export function calculateBollingerBands(prices: number[], period = 20, stdDevMultiplier = 2): BollingerBands {
+  const len = prices.length;
+  const upper: number[] = new Array(len).fill(0);
+  const middle: number[] = new Array(len).fill(0);
+  const lower: number[] = new Array(len).fill(0);
+  const percentB: number[] = new Array(len).fill(0.5);
+  const bandwidth: number[] = new Array(len).fill(0);
+
+  for (let i = period - 1; i < len; i++) {
+    // SMA
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += prices[j];
+    const sma = sum / period;
+
+    // Standard deviation
+    let sqSum = 0;
+    for (let j = i - period + 1; j <= i; j++) sqSum += (prices[j] - sma) ** 2;
+    const stdDev = Math.sqrt(sqSum / period);
+
+    middle[i] = sma;
+    upper[i] = sma + stdDevMultiplier * stdDev;
+    lower[i] = sma - stdDevMultiplier * stdDev;
+
+    const bandWidth = upper[i] - lower[i];
+    percentB[i] = bandWidth > 0 ? (prices[i] - lower[i]) / bandWidth : 0.5;
+    bandwidth[i] = sma > 0 ? bandWidth / sma : 0;
+  }
+
+  return { upper, middle, lower, percentB, bandwidth };
+}
+
+// ─── Stochastic Oscillator ───────────────────────────────────
+// %K = (close - lowest low) / (highest high - lowest low) × 100
+// %D = SMA of %K
+
+export interface StochasticResult {
+  k: number[];  // Fast %K
+  d: number[];  // Slow %D (SMA of %K)
+}
+
+export function calculateStochastic(prices: number[], kPeriod = 14, dPeriod = 3): StochasticResult {
+  const len = prices.length;
+  const k: number[] = new Array(len).fill(50);
+  const d: number[] = new Array(len).fill(50);
+
+  for (let i = kPeriod - 1; i < len; i++) {
+    let highest = -Infinity;
+    let lowest = Infinity;
+    for (let j = i - kPeriod + 1; j <= i; j++) {
+      if (prices[j] > highest) highest = prices[j];
+      if (prices[j] < lowest) lowest = prices[j];
+    }
+    const range = highest - lowest;
+    k[i] = range > 0 ? ((prices[i] - lowest) / range) * 100 : 50;
+  }
+
+  // %D = SMA of %K
+  for (let i = kPeriod - 1 + dPeriod - 1; i < len; i++) {
+    let sum = 0;
+    for (let j = i - dPeriod + 1; j <= i; j++) sum += k[j];
+    d[i] = sum / dPeriod;
+  }
+
+  return { k, d };
 }

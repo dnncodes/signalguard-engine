@@ -1,16 +1,42 @@
 /**
- * Signal Analysis Engine v3.0
- * 
- * Professional 5-minute scalping signal generator using:
- * - EMA crossovers (9/21) with slope momentum
- * - RSI (14-period) with overbought/oversold detection
- * - MACD (12/26/9) with signal line crossovers
- * - ATR (14-period) for volatility measurement
- * - Engulfing pattern detection (tick-based micro-candles)
- * - Price-RSI divergence detection (bullish/bearish)
- * 
- * Scores all active symbols every 5 minutes and selects 
- * the highest-confidence opportunity.
+ * Signal Analysis Engine v3.1
+ *
+ * CHANGELOG from v3.0 → v3.1:
+ * ─────────────────────────────
+ * 1. RSI DIRECTION ENFORCEMENT
+ *    RSI < 25 → hard BUY-only lock (SELL signals are impossible)
+ *    RSI > 75 → hard SELL-only lock (BUY signals are impossible)
+ *    This prevents the critical bug where RSI=3.1 produced a SELL.
+ *
+ * 2. CONFLICT DETECTION & SUPPRESSION
+ *    If RSI says BUY but pattern/EMA says SELL (or vice versa),
+ *    the signal is penalized or killed entirely.
+ *
+ * 3. BOLLINGER BANDS (%B position)
+ *    Adds mean-reversion context: price near lower band supports BUY,
+ *    price near upper band supports SELL.
+ *
+ * 4. STOCHASTIC OSCILLATOR (%K/%D crossover)
+ *    Adds momentum confirmation: oversold %K crossing above %D = BUY,
+ *    overbought %K crossing below %D = SELL.
+ *
+ * 5. CONFLUENCE GATE
+ *    Minimum 3 out of 6 indicators must agree on direction.
+ *    Below that, signal is suppressed regardless of score.
+ *
+ * 6. RAISED CONFIDENCE THRESHOLD
+ *    Minimum composite score raised from 25 → 45.
+ *    Minimum confidence raised to 55%.
+ *
+ * 7. REBALANCED WEIGHTS (total 100)
+ *    EMA Cross:   0-20  (was 0-25)
+ *    RSI:         0-15  (was 0-20)
+ *    MACD:        0-15  (was 0-20)
+ *    Bollinger:   0-15  (NEW)
+ *    Stochastic:  0-10  (NEW)
+ *    Divergence:  0-10  (was 0-15)
+ *    Engulfing:   0-10  (was 0-15)
+ *    Slope:       0-5   (unchanged)
  */
 
 import { derivWs } from "./derivWebSocket";
@@ -23,6 +49,8 @@ import {
   calculateATR,
   calculateEMASlope,
   calculateEMAGap,
+  calculateBollingerBands,
+  calculateStochastic,
 } from "./indicators";
 import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPattern } from "./patterns";
 
@@ -56,6 +84,13 @@ export interface SignalCandidate {
     engulfing: string | null;
     engulfing_strength: number;
     trend_strength: number;
+    bb_percentB: number;
+    bb_position: string;
+    stoch_k: number;
+    stoch_d: number;
+    stoch_signal: string;
+    confluence_count: number;
+    confluence_required: number;
   };
 }
 
@@ -71,6 +106,8 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   const atr = calculateATR(prices, 14);
   const slope = calculateEMASlope(ema9, 5);
   const emaGap = calculateEMAGap(ema9, ema21, prices);
+  const bb = calculateBollingerBands(prices, 20, 2);
+  const stoch = calculateStochastic(prices, 14, 3);
 
   const last = prices.length - 1;
   const currentPrice = prices[last];
@@ -80,80 +117,287 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   const currentATR = atr[last];
   const currentSlope = slope[last];
   const currentEMAGap = emaGap[last];
+  const currentPercentB = bb.percentB[last];
+  const currentStochK = stoch.k[last];
+  const currentStochD = stoch.d[last];
+  const prevStochK = stoch.k[last - 1];
+  const prevStochD = stoch.d[last - 1];
 
-  // ── EMA Crossover Score (0-25) ──
+  // ════════════════════════════════════════════════════════════
+  // STEP 1: Compute individual indicator scores & directions
+  // Each indicator votes BUY (+1), SELL (-1), or NEUTRAL (0)
+  // ════════════════════════════════════════════════════════════
+
+  // ── EMA Crossover Score (0-20) ──
   const emaDiff = ema9[last] - ema21[last];
   const prevEmaDiff = ema9[last - 1] - ema21[last - 1];
   const emaCrossed = (prevEmaDiff <= 0 && emaDiff > 0) || (prevEmaDiff >= 0 && emaDiff < 0);
   const emaTrending = Math.abs(emaDiff) / currentPrice * 10000;
-  const emaScore = emaCrossed ? 25 : Math.min(emaTrending * 5, 12);
+  const emaScore = emaCrossed ? 20 : Math.min(emaTrending * 4, 10);
+  const emaDirection: number = emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0;
 
-  // ── RSI Score (0-20) ──
+  // ── RSI Score (0-15) ──
   let rsiScore = 0;
   let rsiSignal = "neutral";
-  if (currentRSI < 30) { rsiScore = 20; rsiSignal = "oversold"; }
-  else if (currentRSI > 70) { rsiScore = 20; rsiSignal = "overbought"; }
-  else if (currentRSI < 40) { rsiScore = 12; rsiSignal = "approaching_oversold"; }
-  else if (currentRSI > 60) { rsiScore = 12; rsiSignal = "approaching_overbought"; }
-  else { rsiScore = 3; rsiSignal = "neutral"; }
+  let rsiDirection = 0; // +1 = favors BUY, -1 = favors SELL
+  let rsiHardLock: "BUY" | "SELL" | null = null;
 
-  // ── MACD Score (0-20) ──
+  if (currentRSI <= 25) {
+    // EXTREME oversold → strong BUY signal, HARD LOCK against SELL
+    rsiScore = 15;
+    rsiSignal = "extreme_oversold";
+    rsiDirection = 1;
+    rsiHardLock = "BUY";
+  } else if (currentRSI < 35) {
+    rsiScore = 12;
+    rsiSignal = "oversold";
+    rsiDirection = 1;
+  } else if (currentRSI >= 75) {
+    // EXTREME overbought → strong SELL signal, HARD LOCK against BUY
+    rsiScore = 15;
+    rsiSignal = "extreme_overbought";
+    rsiDirection = -1;
+    rsiHardLock = "SELL";
+  } else if (currentRSI > 65) {
+    rsiScore = 12;
+    rsiSignal = "overbought";
+    rsiDirection = -1;
+  } else if (currentRSI < 45) {
+    rsiScore = 5;
+    rsiSignal = "leaning_oversold";
+    rsiDirection = 1;
+  } else if (currentRSI > 55) {
+    rsiScore = 5;
+    rsiSignal = "leaning_overbought";
+    rsiDirection = -1;
+  } else {
+    rsiScore = 2;
+    rsiSignal = "neutral";
+    rsiDirection = 0;
+  }
+
+  // ── MACD Score (0-15) ──
   const macdCrossed = (prevHistogram <= 0 && currentHistogram > 0) || (prevHistogram >= 0 && currentHistogram < 0);
   let macdScore = 0;
   let macdCrossSignal = "none";
+  let macdDirection = 0;
+
   if (macdCrossed) {
-    macdScore = 20;
+    macdScore = 15;
     macdCrossSignal = currentHistogram > 0 ? "bullish_cross" : "bearish_cross";
+    macdDirection = currentHistogram > 0 ? 1 : -1;
   } else {
-    macdScore = Math.min(Math.abs(currentHistogram) * 400, 10);
+    macdScore = Math.min(Math.abs(currentHistogram) * 300, 8);
     macdCrossSignal = currentHistogram > 0 ? "bullish" : "bearish";
+    macdDirection = currentHistogram > 0 ? 1 : -1;
   }
 
-  // ── Divergence Score (0-15) ──
-  const divergence = detectDivergence(prices, rsi);
-  const divScore = divergence ? Math.min(divergence.strength * 0.15, 15) : 0;
+  // ── Bollinger Bands Score (0-15) ── NEW
+  let bbScore = 0;
+  let bbPosition = "middle";
+  let bbDirection = 0;
 
-  // ── Engulfing Pattern Score (0-15) ──
+  if (currentPercentB <= 0.05) {
+    // Price at or below lower band → strong BUY
+    bbScore = 15;
+    bbPosition = "below_lower";
+    bbDirection = 1;
+  } else if (currentPercentB <= 0.2) {
+    bbScore = 10;
+    bbPosition = "near_lower";
+    bbDirection = 1;
+  } else if (currentPercentB >= 0.95) {
+    // Price at or above upper band → strong SELL
+    bbScore = 15;
+    bbPosition = "above_upper";
+    bbDirection = -1;
+  } else if (currentPercentB >= 0.8) {
+    bbScore = 10;
+    bbPosition = "near_upper";
+    bbDirection = -1;
+  } else {
+    bbScore = 2;
+    bbPosition = "middle";
+    bbDirection = 0;
+  }
+
+  // ── Stochastic Oscillator Score (0-10) ── NEW
+  let stochScore = 0;
+  let stochSignal = "neutral";
+  let stochDirection = 0;
+
+  const stochBullishCross = prevStochK <= prevStochD && currentStochK > currentStochD;
+  const stochBearishCross = prevStochK >= prevStochD && currentStochK < currentStochD;
+
+  if (currentStochK < 20 && stochBullishCross) {
+    stochScore = 10;
+    stochSignal = "oversold_cross_up";
+    stochDirection = 1;
+  } else if (currentStochK > 80 && stochBearishCross) {
+    stochScore = 10;
+    stochSignal = "overbought_cross_down";
+    stochDirection = -1;
+  } else if (currentStochK < 20) {
+    stochScore = 6;
+    stochSignal = "oversold";
+    stochDirection = 1;
+  } else if (currentStochK > 80) {
+    stochScore = 6;
+    stochSignal = "overbought";
+    stochDirection = -1;
+  } else if (stochBullishCross) {
+    stochScore = 4;
+    stochSignal = "cross_up";
+    stochDirection = 1;
+  } else if (stochBearishCross) {
+    stochScore = 4;
+    stochSignal = "cross_down";
+    stochDirection = -1;
+  } else {
+    stochScore = 1;
+    stochSignal = "neutral";
+    stochDirection = 0;
+  }
+
+  // ── Divergence Score (0-10) ──
+  const divergence = detectDivergence(prices, rsi);
+  const divScore = divergence ? Math.min(divergence.strength * 0.10, 10) : 0;
+  const divDirection = divergence ? (divergence.type === "bullish" ? 1 : -1) : 0;
+
+  // ── Engulfing Pattern Score (0-10) ──
   const engulfing = detectEngulfing(prices, 10);
   let engulfingScore = 0;
+  let engulfingDirection = 0;
   if (engulfing) {
-    engulfingScore = Math.min(engulfing.strength * 0.15, 15);
+    engulfingScore = Math.min(engulfing.strength * 0.10, 10);
+    engulfingDirection = engulfing.type === "bullish" ? 1 : -1;
   }
 
   // ── Slope Momentum Score (0-5) ──
   const slopeScore = Math.min(Math.abs(currentSlope) * 50, 5);
+  const slopeDirection = currentSlope > 0 ? 1 : currentSlope < 0 ? -1 : 0;
 
-  // ── Determine direction ──
-  let buySignals = 0;
-  let sellSignals = 0;
+  // ════════════════════════════════════════════════════════════
+  // STEP 2: CONFLUENCE GATE — count directional agreement
+  // ════════════════════════════════════════════════════════════
 
-  if (emaDiff > 0) buySignals += 2; else sellSignals += 2;
-  if (currentRSI < 45) buySignals++; else if (currentRSI > 55) sellSignals++;
-  if (currentHistogram > 0) buySignals += 2; else sellSignals += 2;
-  if (currentSlope > 0) buySignals++; else sellSignals++;
-  if (divergence?.type === "bullish") buySignals += 3;
-  if (divergence?.type === "bearish") sellSignals += 3;
-  if (engulfing?.type === "bullish") buySignals += 2;
-  if (engulfing?.type === "bearish") sellSignals += 2;
+  const indicators = [
+    { name: "EMA", dir: emaDirection, weight: 2 },
+    { name: "RSI", dir: rsiDirection, weight: 2 },
+    { name: "MACD", dir: macdDirection, weight: 2 },
+    { name: "BB", dir: bbDirection, weight: 1 },
+    { name: "Stoch", dir: stochDirection, weight: 1 },
+    { name: "Slope", dir: slopeDirection, weight: 1 },
+    { name: "Div", dir: divDirection, weight: 1 },
+    { name: "Engulf", dir: engulfingDirection, weight: 1 },
+  ];
 
-  const type: "BUY" | "SELL" = buySignals >= sellSignals ? "BUY" : "SELL";
-  const totalScore = Math.min(
-    emaScore + rsiScore + macdScore + divScore + engulfingScore + slopeScore,
-    100
-  );
+  let buyWeight = 0;
+  let sellWeight = 0;
+  let buyCount = 0;
+  let sellCount = 0;
 
-  // Only generate if score ≥ 25 for higher quality signals
-  if (totalScore < 25) return null;
+  for (const ind of indicators) {
+    if (ind.dir > 0) { buyWeight += ind.weight; buyCount++; }
+    else if (ind.dir < 0) { sellWeight += ind.weight; sellCount++; }
+  }
 
-  const trendStrength = Math.abs(buySignals - sellSignals) / Math.max(buySignals + sellSignals, 1) * 100;
+  // Determine raw direction from weighted votes
+  let rawType: "BUY" | "SELL" = buyWeight >= sellWeight ? "BUY" : "SELL";
+  const dominantWeight = Math.max(buyWeight, sellWeight);
+  const totalWeight = buyWeight + sellWeight;
+  const dominantCount = rawType === "BUY" ? buyCount : sellCount;
 
-  // Calculate confidence as weighted agreement percentage
-  const totalIndicators = buySignals + sellSignals;
-  const dominantCount = Math.max(buySignals, sellSignals);
+  // ════════════════════════════════════════════════════════════
+  // STEP 3: RSI HARD LOCK — override direction if RSI is extreme
+  // This is the CRITICAL fix: RSI=3.1 can NEVER produce a SELL
+  // ════════════════════════════════════════════════════════════
+
+  let type: "BUY" | "SELL" = rawType;
+
+  if (rsiHardLock) {
+    if (rawType !== rsiHardLock) {
+      // RSI extreme contradicts the voted direction → KILL the signal
+      console.log(
+        `[SignalEngine] CONFLICT SUPPRESSED: RSI ${currentRSI.toFixed(1)} (${rsiSignal}) locks ${rsiHardLock} but indicators voted ${rawType} — signal killed`
+      );
+      return null;
+    }
+    type = rsiHardLock;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // STEP 4: CONFLUENCE MINIMUM — require ≥3 agreeing indicators
+  // ════════════════════════════════════════════════════════════
+
+  const MIN_CONFLUENCE = 3;
+  if (dominantCount < MIN_CONFLUENCE) {
+    console.log(
+      `[SignalEngine] CONFLUENCE GATE: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — need ${MIN_CONFLUENCE}. Skipping.`
+    );
+    return null;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // STEP 5: CONFLICT PENALTY — reduce score if strong disagreement
+  // ════════════════════════════════════════════════════════════
+
+  let conflictPenalty = 0;
+
+  // Check for RSI vs Pattern conflict (the exact bug from the Telegram example)
+  if (rsiDirection !== 0 && engulfingDirection !== 0 && rsiDirection !== engulfingDirection) {
+    conflictPenalty += 15;
+    console.log(`[SignalEngine] CONFLICT: RSI (${rsiSignal}) vs Engulfing (${engulfing?.type}) — penalty -15`);
+  }
+
+  // Check for RSI vs EMA conflict
+  if (rsiDirection !== 0 && emaDirection !== 0 && rsiDirection !== emaDirection) {
+    conflictPenalty += 10;
+  }
+
+  // Check for Bollinger vs MACD conflict
+  if (bbDirection !== 0 && macdDirection !== 0 && bbDirection !== macdDirection) {
+    conflictPenalty += 5;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // STEP 6: COMPOSITE SCORE
+  // ════════════════════════════════════════════════════════════
+
+  const rawScore = emaScore + rsiScore + macdScore + bbScore + stochScore +
+    divScore + engulfingScore + slopeScore;
+
+  // Apply conflict penalty
+  const penalizedScore = Math.max(rawScore - conflictPenalty, 0);
+
+  // Apply confluence multiplier: more agreement = higher score
+  const confluenceRatio = dominantWeight / Math.max(totalWeight, 1);
+  const totalScore = Math.min(Math.round(penalizedScore * (0.6 + 0.4 * confluenceRatio)), 100);
+
+  // ════════════════════════════════════════════════════════════
+  // STEP 7: QUALITY GATE — minimum score and confidence
+  // ════════════════════════════════════════════════════════════
+
+  if (totalScore < 45) {
+    return null; // Score too low — don't generate noise
+  }
+
   const confidence = Math.min(
-    (dominantCount / Math.max(totalIndicators, 1)) * totalScore,
+    (dominantWeight / Math.max(totalWeight, 1)) * totalScore,
     100
   );
+
+  if (confidence < 55) {
+    return null; // Confidence too low — skip
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // STEP 8: BUILD OUTPUT
+  // ════════════════════════════════════════════════════════════
+
+  const trendStrength = totalWeight > 0
+    ? Math.abs(buyWeight - sellWeight) / totalWeight * 100
+    : 0;
 
   // Build pattern string
   const patterns: string[] = [];
@@ -161,14 +405,19 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   if (divergence) patterns.push(`${divergence.type.toUpperCase()} DIVERGENCE`);
   if (emaCrossed) patterns.push("EMA CROSSOVER");
   if (macdCrossed) patterns.push("MACD CROSSOVER");
+  if (stochBullishCross || stochBearishCross) patterns.push("STOCH CROSSOVER");
+  if (currentPercentB <= 0.05 || currentPercentB >= 0.95) patterns.push("BB EXTREME");
   const pattern = patterns.length > 0 ? patterns.join(" + ") : null;
 
   // Logic summary
   const logicParts: string[] = [];
   if (trendStrength > 60) logicParts.push("Strong Trend");
   else if (trendStrength > 30) logicParts.push("Moderate Trend");
-  else logicParts.push("Weak Trend");
+  else logicParts.push("Mild Trend");
   logicParts.push(`RSI: ${currentRSI.toFixed(1)}`);
+  logicParts.push(`BB: ${(currentPercentB * 100).toFixed(0)}%`);
+  logicParts.push(`Stoch: ${currentStochK.toFixed(0)}`);
+  logicParts.push(`${dominantCount}/${indicators.length} agree`);
   if (engulfing) logicParts.push("Engulfing");
   if (divergence) logicParts.push("Divergence");
   const logic = logicParts.join(" | ");
@@ -177,6 +426,8 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     `EMA${emaCrossed ? " CROSS" : ""}: ${emaDiff > 0 ? "↑" : "↓"}`,
     `RSI: ${currentRSI.toFixed(1)} (${rsiSignal})`,
     `MACD: ${macdCrossSignal}`,
+    `BB: ${bbPosition} (${(currentPercentB * 100).toFixed(0)}%)`,
+    `Stoch: ${stochSignal} (K:${currentStochK.toFixed(0)})`,
     `ATR: ${currentATR.toFixed(4)}`,
     pattern,
   ].filter(Boolean).join(" | ");
@@ -185,7 +436,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     symbol: "",
     type,
     price: currentPrice,
-    score: Math.round(totalScore),
+    score: totalScore,
     confidence: Math.round(confidence * 10) / 10,
     details,
     logic,
@@ -206,6 +457,13 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
       engulfing: engulfing?.type || null,
       engulfing_strength: engulfing?.strength || 0,
       trend_strength: trendStrength,
+      bb_percentB: currentPercentB,
+      bb_position: bbPosition,
+      stoch_k: currentStochK,
+      stoch_d: currentStochD,
+      stoch_signal: stochSignal,
+      confluence_count: dominantCount,
+      confluence_required: MIN_CONFLUENCE,
     },
   };
 }
@@ -240,7 +498,6 @@ export class SignalGenerator {
 
     const candidates: SignalCandidate[] = [];
 
-    // Analyze ALL symbols in parallel for speed
     const analyses = await Promise.allSettled(
       this.activeSymbols.map(async (symbol) => {
         const history = await derivWs.getTickHistory(symbol, 200);
@@ -263,26 +520,23 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      // No candidates passed the threshold — skip this cycle entirely
-      // Better to skip than send low-quality signals
       console.log("[SignalEngine] No high-confidence signals this cycle — skipping");
       return null;
     }
 
-    // Sort by confidence descending, pick the best
+    // Sort by confidence descending, then score as tiebreaker
     candidates.sort((a, b) => b.confidence - a.confidence || b.score - a.score);
     return candidates[0] || null;
   }
 
   private lastSignalTime = 0;
-  private MIN_INTERVAL_MS = 4 * 60 * 1000; // Never fire signals less than 4 minutes apart
+  private MIN_INTERVAL_MS = 4 * 60 * 1000;
 
   start(intervalMs = 5 * 60 * 1000) {
     if (this.running) return;
     this.running = true;
-    // Do NOT fire immediately — wait for the first full interval
     this.intervalId = setInterval(() => this.tick(), intervalMs);
-    console.log(`[SignalEngine] Started — signals every ${intervalMs / 1000}s (min gap: ${this.MIN_INTERVAL_MS / 1000}s)`);
+    console.log(`[SignalEngine] v3.1 Started — signals every ${intervalMs / 1000}s (min gap: ${this.MIN_INTERVAL_MS / 1000}s)`);
   }
 
   stop() {

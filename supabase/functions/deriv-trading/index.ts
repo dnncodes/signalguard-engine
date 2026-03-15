@@ -181,12 +181,22 @@ function formatSignalTelegram(body: any): string {
       const macdDir = Number(metrics.macd_histogram) > 0 ? "↑" : "↓";
       lines.push(`MACD: <code>${Number(metrics.macd_histogram).toFixed(4)}</code> ${macdDir} (${metrics.macd_cross || "—"})`);
     }
+    if (metrics.bb_percentB != null) {
+      const bbPct = (Number(metrics.bb_percentB) * 100).toFixed(0);
+      lines.push(`BB %B: <code>${bbPct}%</code> (${metrics.bb_position || "—"})`);
+    }
+    if (metrics.stoch_k != null) {
+      lines.push(`Stoch: <code>K:${Number(metrics.stoch_k).toFixed(0)} / D:${Number(metrics.stoch_d || 0).toFixed(0)}</code> (${metrics.stoch_signal || "—"})`);
+    }
     if (metrics.atr != null) lines.push(`ATR (14): <code>${Number(metrics.atr).toFixed(4)}</code>`);
     if (metrics.ema_gap_pct != null) lines.push(`EMA Gap: <code>${Number(metrics.ema_gap_pct).toFixed(4)}%</code>`);
     if (metrics.ema_slope != null) lines.push(`Slope: <code>${Number(metrics.ema_slope).toFixed(6)}</code>`);
     if (metrics.divergence) lines.push(`📉 Divergence: <code>${metrics.divergence}</code> (str: ${Number(metrics.divergence_strength || 0).toFixed(0)})`);
     if (metrics.engulfing) lines.push(`🕯 Engulfing: <code>${metrics.engulfing}</code> (str: ${Number(metrics.engulfing_strength || 0).toFixed(0)})`);
     if (trendLabel) lines.push(`📊 Trend: ${trendLabel} (${Number(metrics.trend_strength).toFixed(0)}%)`);
+    if (metrics.confluence_count != null) {
+      lines.push(`🎯 Confluence: <code>${metrics.confluence_count}/${metrics.confluence_required || 3}</code> indicators agree`);
+    }
   }
 
   lines.push(
@@ -195,7 +205,7 @@ function formatSignalTelegram(body: any): string {
     `💡 <b>Logic:</b> ${logic || details || "—"}`,
     ``,
     `📌 <i>5-min scalping | Best of ${Object.keys(SYMBOL_NAMES).length} markets</i>`,
-    `🤖 <i>DNN Deriv Engine v3.0</i>`
+    `🤖 <i>DNN Deriv Engine v3.1</i>`
   );
 
   return lines.join("\n");
