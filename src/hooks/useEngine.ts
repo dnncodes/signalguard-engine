@@ -935,7 +935,7 @@ export function useLiveAutomation() {
   };
 }
 
-// ─── useTestTrade (with martingale support) ──────────────────
+// ─── useTestTrade (Manual Trade with martingale support) ─────
 
 export function useTestTrade() {
   const [loading, setLoading] = useState(false);
