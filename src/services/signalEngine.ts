@@ -374,21 +374,13 @@ export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandid
   const totalScore = Math.min(Math.round(penalizedScore * (0.6 + 0.4 * confluenceRatio)), 100);
 
   // ════════════════════════════════════════════════════════════
-  // STEP 7: QUALITY GATE — minimum score and confidence
+  // STEP 7: CONFIDENCE CALCULATION (no gate — always emit)
   // ════════════════════════════════════════════════════════════
-
-  if (totalScore < 40) {
-    return null; // Score too low — don't generate noise
-  }
 
   const confidence = Math.min(
     (dominantWeight / Math.max(totalWeight, 1)) * totalScore,
     100
   );
-
-  if (confidence < 45) {
-    return null; // Confidence too low — skip
-  }
 
   // ════════════════════════════════════════════════════════════
   // STEP 8: BUILD OUTPUT
