@@ -96,7 +96,7 @@ export interface SignalCandidate {
 
 // ─── Symbol Analysis ─────────────────────────────────────────
 
-export function analyzeSymbol(prices: number[]): SignalCandidate | null {
+export function analyzeSymbol(prices: number[], forceEmit = false): SignalCandidate | null {
   if (prices.length < 50) return null;
 
   const ema9 = calculateEMA(prices, 9);
