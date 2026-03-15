@@ -142,7 +142,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   let rsiDirection = 0; // +1 = favors BUY, -1 = favors SELL
   let rsiHardLock: "BUY" | "SELL" | null = null;
 
-  if (currentRSI <= 25) {
+  if (currentRSI <= 15) {
     // EXTREME oversold → strong BUY signal, HARD LOCK against SELL
     rsiScore = 15;
     rsiSignal = "extreme_oversold";
