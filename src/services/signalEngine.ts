@@ -330,7 +330,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   // STEP 4: CONFLUENCE MINIMUM — require ≥3 agreeing indicators
   // ════════════════════════════════════════════════════════════
 
-  const MIN_CONFLUENCE = 3;
+  const MIN_CONFLUENCE = 2;
   if (dominantCount < MIN_CONFLUENCE) {
     console.log(
       `[SignalEngine] CONFLUENCE GATE: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — need ${MIN_CONFLUENCE}. Skipping.`
