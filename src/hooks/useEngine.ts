@@ -558,6 +558,8 @@ export function useBacktest() {
 
 export function useLiveAutomation() {
   const [isRunning, setIsRunning] = useState(false);
+  // accountType ref for stable access in callbacks without stale closures
+  const accountTypeRef = useRef<"demo" | "live">("demo");
   const [status, setStatus] = useState<LiveAutomationStatus | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [currency, setCurrency] = useState("USD");
