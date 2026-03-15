@@ -21,12 +21,12 @@
  *    overbought %K crossing below %D = SELL.
  *
  * 5. CONFLUENCE GATE
- *    Minimum 3 out of 6 indicators must agree on direction.
+ *    Minimum 2 out of 8 indicators must agree on direction.
  *    Below that, signal is suppressed regardless of score.
  *
  * 6. RAISED CONFIDENCE THRESHOLD
- *    Minimum composite score raised from 25 → 45.
- *    Minimum confidence raised to 55%.
+ *    Minimum composite score raised from 25 → 40.
+ *    Minimum confidence raised to 45%.
  *
  * 7. REBALANCED WEIGHTS (total 100)
  *    EMA Cross:   0-20  (was 0-25)
@@ -142,23 +142,23 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   let rsiDirection = 0; // +1 = favors BUY, -1 = favors SELL
   let rsiHardLock: "BUY" | "SELL" | null = null;
 
-  if (currentRSI <= 25) {
+  if (currentRSI <= 15) {
     // EXTREME oversold → strong BUY signal, HARD LOCK against SELL
     rsiScore = 15;
     rsiSignal = "extreme_oversold";
     rsiDirection = 1;
     rsiHardLock = "BUY";
-  } else if (currentRSI < 35) {
+  } else if (currentRSI < 30) {
     rsiScore = 12;
     rsiSignal = "oversold";
     rsiDirection = 1;
-  } else if (currentRSI >= 75) {
+  } else if (currentRSI >= 85) {
     // EXTREME overbought → strong SELL signal, HARD LOCK against BUY
     rsiScore = 15;
     rsiSignal = "extreme_overbought";
     rsiDirection = -1;
     rsiHardLock = "SELL";
-  } else if (currentRSI > 65) {
+  } else if (currentRSI > 70) {
     rsiScore = 12;
     rsiSignal = "overbought";
     rsiDirection = -1;
@@ -330,7 +330,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   // STEP 4: CONFLUENCE MINIMUM — require ≥3 agreeing indicators
   // ════════════════════════════════════════════════════════════
 
-  const MIN_CONFLUENCE = 3;
+  const MIN_CONFLUENCE = 2;
   if (dominantCount < MIN_CONFLUENCE) {
     console.log(
       `[SignalEngine] CONFLUENCE GATE: Only ${dominantCount}/${indicators.length} indicators agree on ${type} — need ${MIN_CONFLUENCE}. Skipping.`
@@ -346,13 +346,13 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
 
   // Check for RSI vs Pattern conflict (the exact bug from the Telegram example)
   if (rsiDirection !== 0 && engulfingDirection !== 0 && rsiDirection !== engulfingDirection) {
-    conflictPenalty += 15;
+    conflictPenalty += 8;
     console.log(`[SignalEngine] CONFLICT: RSI (${rsiSignal}) vs Engulfing (${engulfing?.type}) — penalty -15`);
   }
 
   // Check for RSI vs EMA conflict
   if (rsiDirection !== 0 && emaDirection !== 0 && rsiDirection !== emaDirection) {
-    conflictPenalty += 10;
+    conflictPenalty += 5;
   }
 
   // Check for Bollinger vs MACD conflict
@@ -378,7 +378,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   // STEP 7: QUALITY GATE — minimum score and confidence
   // ════════════════════════════════════════════════════════════
 
-  if (totalScore < 45) {
+  if (totalScore < 40) {
     return null; // Score too low — don't generate noise
   }
 
@@ -387,7 +387,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     100
   );
 
-  if (confidence < 55) {
+  if (confidence < 45) {
     return null; // Confidence too low — skip
   }
 
