@@ -20,13 +20,12 @@
  *    Adds momentum confirmation: oversold %K crossing above %D = BUY,
  *    overbought %K crossing below %D = SELL.
  *
- * 5. CONFLUENCE GATE
- *    Minimum 2 out of 8 indicators must agree on direction.
- *    Below that, signal is suppressed regardless of score.
+ * 5. CONFLUENCE CHECK (soft — penalizes but never kills)
+ *    Low confluence adds penalty to score but signal is still emitted.
  *
- * 6. RAISED CONFIDENCE THRESHOLD
- *    Minimum composite score raised from 25 → 40.
- *    Minimum confidence raised to 45%.
+ * 6. GUARANTEED 5-MIN SIGNAL
+ *    Every cycle ALWAYS emits the best candidate regardless of score.
+ *    Low-confidence signals are tagged with ⚠️ in output.
  *
  * 7. REBALANCED WEIGHTS (total 100)
  *    EMA Cross:   0-20  (was 0-25)
