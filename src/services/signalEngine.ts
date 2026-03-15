@@ -387,7 +387,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
     100
   );
 
-  if (confidence < 55) {
+  if (confidence < 45) {
     return null; // Confidence too low — skip
   }
 
