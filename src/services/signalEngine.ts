@@ -378,7 +378,7 @@ export function analyzeSymbol(prices: number[]): SignalCandidate | null {
   // STEP 7: QUALITY GATE — minimum score and confidence
   // ════════════════════════════════════════════════════════════
 
-  if (totalScore < 45) {
+  if (totalScore < 40) {
     return null; // Score too low — don't generate noise
   }
 
