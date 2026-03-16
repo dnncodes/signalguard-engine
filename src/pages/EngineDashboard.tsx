@@ -35,6 +35,9 @@ export default function EngineDashboard() {
         wsStatus={wsStatus}
         onQuickTrade={testTrade.quickTrade}
         quickTradeLoading={testTrade.loading}
+        quickTradeExecuted={testTrade.quickTradeExecuted}
+        tradeOpenedAt={testTrade.tradeOpenedAt}
+        tradeResult={testTrade.result ? { result: testTrade.result.result, profit: testTrade.result.profit } : null}
       />
       <MarketTicker status={status} />
 
