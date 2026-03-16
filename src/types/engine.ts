@@ -16,13 +16,16 @@ export const SYMBOLS: Record<string, string> = {
   "1HZ90V": "Volatility 90 (1s) Index",
   "1HZ100V": "Volatility 100 (1s) Index",
   "R_100": "Volatility 100 Index",
-  "BOOM500": "Boom 500 Index",
-  "BOOM1000": "Boom 1000 Index",
-  "CRASH500": "Crash 500 Index",
-  "CRASH1000": "Crash 1000 Index",
+  "STP100": "Step Index 100",
+  "STP200": "Step Index 200",
+  "STP300": "Step Index 300",
+  "STP400": "Step Index 400",
+  "STP500": "Step Index 500",
   "JD10": "Jump 10 Index",
   "JD25": "Jump 25 Index",
   "JD50": "Jump 50 Index",
+  "JD75": "Jump 75 Index",
+  "JD100": "Jump 100 Index",
 };
 
 export interface Signal {
