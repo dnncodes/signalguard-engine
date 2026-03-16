@@ -1,32 +1,40 @@
 /**
- * Verified Deriv synthetic index symbols with real-time data.
- * 20 confirmed symbols that stream live ticks.
+ * Verified Deriv synthetic index symbols — queried from active_symbols API.
+ * 23 confirmed symbols that stream live ticks.
  */
 export const SYMBOLS: Record<string, string> = {
+  // Volatility Indices (1s tick)
   "1HZ10V": "Volatility 10 (1s) Index",
-  "R_10": "Volatility 10 Index",
   "1HZ15V": "Volatility 15 (1s) Index",
   "1HZ25V": "Volatility 25 (1s) Index",
-  "R_25": "Volatility 25 Index",
   "1HZ30V": "Volatility 30 (1s) Index",
   "1HZ50V": "Volatility 50 (1s) Index",
-  "R_50": "Volatility 50 Index",
   "1HZ75V": "Volatility 75 (1s) Index",
-  "R_75": "Volatility 75 Index",
   "1HZ90V": "Volatility 90 (1s) Index",
   "1HZ100V": "Volatility 100 (1s) Index",
+  // Volatility Indices (standard)
+  "R_10": "Volatility 10 Index",
+  "R_25": "Volatility 25 Index",
+  "R_50": "Volatility 50 Index",
+  "R_75": "Volatility 75 Index",
   "R_100": "Volatility 100 Index",
-  "STP100": "Step Index 100",
-  "STP200": "Step Index 200",
-  "STP300": "Step Index 300",
-  "STP400": "Step Index 400",
-  "STP500": "Step Index 500",
+  // Step Indices — CORRECT Deriv API symbols (verified via active_symbols)
+  "stpRNG": "Step Index 100",
+  "stpRNG2": "Step Index 200",
+  "stpRNG3": "Step Index 300",
+  "stpRNG4": "Step Index 400",
+  "stpRNG5": "Step Index 500",
+  // Jump Indices
   "JD10": "Jump 10 Index",
   "JD25": "Jump 25 Index",
   "JD50": "Jump 50 Index",
   "JD75": "Jump 75 Index",
   "JD100": "Jump 100 Index",
 };
+
+// Trade duration constants (in minutes)
+export const TRADE_DURATION_LIVE = 4.75; // 4min 45s for live/manual — allows settlement buffer
+export const TRADE_DURATION_BACKTEST = 5; // 5min for backtesting
 
 export interface Signal {
   id: number;

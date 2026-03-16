@@ -72,7 +72,7 @@ function errorResponse(message: string, status = 500) {
 }
 
 // Telegram bot helper
-async function sendTelegramMessage(text: string): Promise<void> {
+async function sendTelegramMessage(text: string, replyMarkup?: any): Promise<void> {
   const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
   const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_CHAT_ID");
 
@@ -82,15 +82,20 @@ async function sendTelegramMessage(text: string): Promise<void> {
   }
 
   try {
+    const body: any = {
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    };
+    if (replyMarkup) {
+      body.reply_markup = replyMarkup;
+    }
+
     const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
@@ -102,7 +107,7 @@ async function sendTelegramMessage(text: string): Promise<void> {
   }
 }
 
-// Symbol display names
+// Symbol display names (correct Deriv API symbols)
 const SYMBOL_NAMES: Record<string, string> = {
   "1HZ10V": "Volatility 10 (1s) Index", "R_10": "Volatility 10 Index",
   "1HZ15V": "Volatility 15 (1s) Index", "1HZ25V": "Volatility 25 (1s) Index",
@@ -110,10 +115,13 @@ const SYMBOL_NAMES: Record<string, string> = {
   "1HZ50V": "Volatility 50 (1s) Index", "R_50": "Volatility 50 Index",
   "1HZ75V": "Volatility 75 (1s) Index", "R_75": "Volatility 75 Index",
   "1HZ90V": "Volatility 90 (1s) Index", "1HZ100V": "Volatility 100 (1s) Index",
-  "R_100": "Volatility 100 Index", "BOOM500": "Boom 500 Index",
-  "BOOM1000": "Boom 1000 Index", "CRASH500": "Crash 500 Index",
-  "CRASH1000": "Crash 1000 Index", "JD10": "Jump 10 Index",
-  "JD25": "Jump 25 Index", "JD50": "Jump 50 Index",
+  "R_100": "Volatility 100 Index",
+  "stpRNG": "Step Index 100", "stpRNG2": "Step Index 200",
+  "stpRNG3": "Step Index 300", "stpRNG4": "Step Index 400",
+  "stpRNG5": "Step Index 500",
+  "JD10": "Jump 10 Index", "JD25": "Jump 25 Index",
+  "JD50": "Jump 50 Index", "JD75": "Jump 75 Index",
+  "JD100": "Jump 100 Index",
 };
 
 // ─── Professional Telegram Signal Formatter ──────────────────
@@ -211,6 +219,42 @@ function formatSignalTelegram(body: any): string {
   return lines.join("\n");
 }
 
+// Build Telegram inline keyboard for quick trade
+function buildQuickTradeKeyboard(symbol: string, type: "BUY" | "SELL", price: number): any {
+  const contractType = type === "BUY" ? "CALL" : "PUT";
+  // Callback data format: qt:<symbol>:<contractType>:<accountType>:<amount>
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: `⚡ Quick ${type} (Demo $10)`,
+          callback_data: `qt:${symbol}:${contractType}:demo:10`,
+        },
+        {
+          text: `⚡ Quick ${type} (Demo $25)`,
+          callback_data: `qt:${symbol}:${contractType}:demo:25`,
+        },
+      ],
+      [
+        {
+          text: `🔴 Live ${type} ($0.35)`,
+          callback_data: `qt:${symbol}:${contractType}:live:0.35`,
+        },
+        {
+          text: `🔴 Live ${type} ($1.00)`,
+          callback_data: `qt:${symbol}:${contractType}:live:1`,
+        },
+      ],
+      [
+        {
+          text: `🤖 Start Auto (Demo)`,
+          callback_data: `auto:demo:${symbol}`,
+        },
+      ],
+    ],
+  };
+}
+
 function formatSettlementTelegram(contractId: number, symbol: string, profit: number, balanceAfter?: number): string {
   const name = SYMBOL_NAMES[symbol] || symbol;
   const isWin = profit >= 0;
@@ -234,20 +278,14 @@ function formatSettlementTelegram(contractId: number, symbol: string, profit: nu
 }
 
 // ─── Account Authorization (ROBUST) ─────────────────────────
-// Strategy:
-//   1. If requesting "live" and DERIV_LIVE_API_TOKEN exists → authorize directly with it
-//   2. If requesting "demo" and DERIV_API_TOKEN exists → authorize directly with it  
-//   3. Otherwise try account_list switching (requires admin scope)
-//   4. NEVER silently fall back to wrong account type — return explicit error
 
 async function authorizeForAccount(
   ws: WebSocket,
   requestedAccountType: "demo" | "live"
 ): Promise<{ auth: any; actualType: "demo" | "live" }> {
-  const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN"); // primary token (usually demo)
-  const DERIV_LIVE_TOKEN = Deno.env.get("DERIV_LIVE_API_TOKEN"); // dedicated live token
+  const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN");
+  const DERIV_LIVE_TOKEN = Deno.env.get("DERIV_LIVE_API_TOKEN");
   
-  // Strategy 1: Use dedicated token for the requested account type
   if (requestedAccountType === "live" && DERIV_LIVE_TOKEN) {
     console.log("[deriv-trading] Using dedicated DERIV_LIVE_API_TOKEN for live account");
     const authRes = await derivRequest(ws, { authorize: DERIV_LIVE_TOKEN });
@@ -259,7 +297,6 @@ async function authorizeForAccount(
     return { auth: authRes.authorize, actualType: "live" };
   }
 
-  // Strategy 2: Authorize with default token
   if (!DERIV_TOKEN) throw new Error("DERIV_API_TOKEN not configured");
   
   const authRes = await derivRequest(ws, { authorize: DERIV_TOKEN });
@@ -269,13 +306,11 @@ async function authorizeForAccount(
   const isCurrentVirtual = !!initialAuth.is_virtual;
   const wantVirtual = requestedAccountType === "demo";
 
-  // If default token already matches the requested type, we're done
   if (isCurrentVirtual === wantVirtual) {
     console.log(`[deriv-trading] Default token matches ${requestedAccountType}: ${initialAuth.loginid}`);
     return { auth: initialAuth, actualType: requestedAccountType };
   }
 
-  // Strategy 3: Try account_list switching (requires admin scope on token)
   const accountList = initialAuth.account_list || [];
   const targetAccount = accountList.find((acc: any) =>
     wantVirtual ? acc.is_virtual === 1 : acc.is_virtual === 0
@@ -291,7 +326,6 @@ async function authorizeForAccount(
     }
   }
 
-  // Strategy 4: FAIL explicitly — do NOT silently use wrong account
   if (requestedAccountType === "live") {
     const msg = `Cannot switch to live account. Your API token doesn't have 'admin' scope for account switching. ` +
       `Please either: (1) Create a new API token with 'Admin' scope on deriv.com, or ` +
@@ -300,7 +334,6 @@ async function authorizeForAccount(
     throw new Error(msg);
   }
 
-  // For demo requests when we're on live, same issue but reversed
   console.warn(`[deriv-trading] Cannot switch to demo from live account. Using current: ${initialAuth.loginid}`);
   return { auth: initialAuth, actualType: isCurrentVirtual ? "demo" : "live" };
 }
@@ -331,18 +364,18 @@ serve(async (req: Request) => {
     if (action === "telegram_signal" && req.method === "POST") {
       const body = await req.json();
       const message = formatSignalTelegram(body);
-      await sendTelegramMessage(message);
+      const keyboard = buildQuickTradeKeyboard(body.symbol, body.type, body.price);
+      await sendTelegramMessage(message, keyboard);
       return jsonResponse({ success: true, message: "Signal sent to Telegram" });
     }
 
-    // Determine requested account type from query param or request body
-    let requestedAccountType: "demo" | "live" = "demo"; // default to demo for safety
+    // Determine requested account type
+    let requestedAccountType: "demo" | "live" = "demo";
     const accountTypeParam = url.searchParams.get("account_type");
     if (accountTypeParam === "demo" || accountTypeParam === "live") {
       requestedAccountType = accountTypeParam;
     }
 
-    // For POST requests, also check the body for account_type
     let parsedBody: any = null;
     if (req.method === "POST") {
       try {
@@ -364,12 +397,10 @@ serve(async (req: Request) => {
     }
 
     try {
-      // ROBUST authorization — will fail explicitly if can't switch to requested account
       const { auth: acct, actualType } = await authorizeForAccount(ws, requestedAccountType);
 
       console.log(`[deriv-trading] Authorized: ${acct.loginid} (${actualType}) | Balance: ${acct.balance} ${acct.currency} | Action: ${action} | Requested: ${requestedAccountType}`);
 
-      // INTEGRITY CHECK: Ensure we're on the correct account type
       if (actualType !== requestedAccountType) {
         return errorResponse(
           `Account type mismatch: requested ${requestedAccountType} but authorized as ${actualType} (${acct.loginid}). Check your API token configuration.`,
@@ -379,7 +410,6 @@ serve(async (req: Request) => {
 
       // ── BALANCE ──
       if (action === "balance") {
-        // Fetch fresh balance (not just from authorize cache)
         const balRes = await derivRequest(ws, { balance: 1 });
         const bal = balRes.balance || {};
         return jsonResponse({
@@ -439,7 +469,7 @@ serve(async (req: Request) => {
           transaction_id: buyData.transaction_id,
           balance_after: buyData.balance_after,
           duration_minutes: dur,
-          account_type: actualType, // Use ACTUAL verified type, not requested
+          account_type: actualType,
           currency: acct.currency,
           source: source || "manual",
           result: "PENDING",
@@ -525,7 +555,6 @@ serve(async (req: Request) => {
           const profit = (contract.sell_price || contract.bid_price || 0) - contract.buy_price;
           const result = profit >= 0 ? "WIN" : "LOSS";
 
-          // Fetch current balance after settlement
           let balanceAfter = contract.balance_after || null;
           if (!balanceAfter) {
             try {
