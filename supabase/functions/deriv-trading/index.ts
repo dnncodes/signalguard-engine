@@ -460,8 +460,15 @@ serve(async (req: Request) => {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
-        const dur = duration || 5;
-        const durUnit = duration_unit || "m";
+        const {
+          duration: normalizedDuration,
+          durationUnit: normalizedDurationUnit,
+          durationMinutes,
+        } = normalizeDerivDuration(duration, duration_unit);
+
+        console.log(
+          `[deriv-trading] Buy request: ${symbol} ${contract_type} | ${normalizedDuration}${normalizedDurationUnit} | stake ${amount}`
+        );
 
         const proposalRes = await derivRequest(ws, {
           proposal: 1,
@@ -469,8 +476,8 @@ serve(async (req: Request) => {
           basis: "stake",
           contract_type,
           currency: acct.currency,
-          duration: dur,
-          duration_unit: durUnit,
+          duration: normalizedDuration,
+          duration_unit: normalizedDurationUnit,
           symbol,
         });
 
