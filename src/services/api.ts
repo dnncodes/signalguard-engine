@@ -54,6 +54,27 @@ async function callEdgeFunction<T>(
   return data as T;
 }
 
+function normalizeDerivDuration(duration: number, unit: string) {
+  const normalizedUnit = unit || "m";
+  const numericDuration = Number(duration);
+
+  if (!Number.isFinite(numericDuration) || numericDuration <= 0) {
+    throw new ApiError("Invalid trade duration supplied", "PARSE_ERROR");
+  }
+
+  if (normalizedUnit === "m" && numericDuration % 1 !== 0) {
+    return {
+      duration: Math.round(numericDuration * 60),
+      durationUnit: "s",
+    };
+  }
+
+  return {
+    duration: Math.round(numericDuration),
+    durationUnit: normalizedUnit,
+  };
+}
+
 // ─── Public API ──────────────────────────────────────────────
 
 export async function fetchSignals(): Promise<Signal[]> {
@@ -123,10 +144,10 @@ export async function executeTrade(params: {
   longcode: string;
 }> {
   // Deriv API requires integer durations. For 4.75m, use 285 seconds.
-  const dur = params.duration;
-  const isDecimal = dur % 1 !== 0;
-  const actualDuration = isDecimal ? Math.round(dur * 60) : dur;
-  const actualUnit = isDecimal ? "s" : params.durationUnit;
+  const { duration: actualDuration, durationUnit: actualUnit } = normalizeDerivDuration(
+    params.duration,
+    params.durationUnit
+  );
 
   return callEdgeFunction("buy", {
     method: "POST",
@@ -174,6 +195,11 @@ export async function executeTestTrade(params: {
 }): Promise<TestTradeResult> {
   const contractType = params.type === "BUY" ? "CALL" : "PUT";
 
+  const { duration: actualDuration, durationUnit: actualUnit } = normalizeDerivDuration(
+    params.durationMinutes,
+    "m"
+  );
+
   const result = await callEdgeFunction<{
     success: boolean;
     contract_id: number;
@@ -187,8 +213,8 @@ export async function executeTestTrade(params: {
       symbol: params.symbol,
       amount: params.amount,
       contract_type: contractType,
-      duration: params.durationMinutes,
-      duration_unit: "m",
+      duration: actualDuration,
+      duration_unit: actualUnit,
       source: "manual",
       account_type: params.accountType,
     },

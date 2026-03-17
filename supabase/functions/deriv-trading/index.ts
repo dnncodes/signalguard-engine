@@ -71,6 +71,31 @@ function errorResponse(message: string, status = 500) {
   return jsonResponse({ error: message }, status);
 }
 
+function normalizeDerivDuration(duration: unknown, durationUnit: unknown) {
+  const normalizedUnit = typeof durationUnit === "string" && durationUnit ? durationUnit : "m";
+  const numericDuration = Number(duration ?? 5);
+
+  if (!Number.isFinite(numericDuration) || numericDuration <= 0) {
+    throw new Error("Invalid trade duration");
+  }
+
+  if (normalizedUnit === "m" && numericDuration % 1 !== 0) {
+    return {
+      duration: Math.round(numericDuration * 60),
+      durationUnit: "s",
+      durationMinutes: numericDuration,
+    };
+  }
+
+  const safeDuration = Math.round(numericDuration);
+
+  return {
+    duration: safeDuration,
+    durationUnit: normalizedUnit,
+    durationMinutes: normalizedUnit === "s" ? safeDuration / 60 : safeDuration,
+  };
+}
+
 // Telegram bot helper
 async function sendTelegramMessage(text: string, replyMarkup?: any): Promise<void> {
   const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
@@ -435,8 +460,15 @@ serve(async (req: Request) => {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
-        const dur = duration || 5;
-        const durUnit = duration_unit || "m";
+        const {
+          duration: normalizedDuration,
+          durationUnit: normalizedDurationUnit,
+          durationMinutes,
+        } = normalizeDerivDuration(duration, duration_unit);
+
+        console.log(
+          `[deriv-trading] Buy request: ${symbol} ${contract_type} | ${normalizedDuration}${normalizedDurationUnit} | stake ${amount}`
+        );
 
         const proposalRes = await derivRequest(ws, {
           proposal: 1,
@@ -444,8 +476,8 @@ serve(async (req: Request) => {
           basis: "stake",
           contract_type,
           currency: acct.currency,
-          duration: dur,
-          duration_unit: durUnit,
+          duration: normalizedDuration,
+          duration_unit: normalizedDurationUnit,
           symbol,
         });
 
@@ -470,7 +502,7 @@ serve(async (req: Request) => {
           contract_id: buyData.contract_id,
           transaction_id: buyData.transaction_id,
           balance_after: buyData.balance_after,
-          duration_minutes: dur,
+          duration_minutes: durationMinutes,
           account_type: actualType,
           currency: acct.currency,
           source: source || "manual",
