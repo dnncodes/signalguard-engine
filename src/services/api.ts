@@ -195,6 +195,11 @@ export async function executeTestTrade(params: {
 }): Promise<TestTradeResult> {
   const contractType = params.type === "BUY" ? "CALL" : "PUT";
 
+  const { duration: actualDuration, durationUnit: actualUnit } = normalizeDerivDuration(
+    params.durationMinutes,
+    "m"
+  );
+
   const result = await callEdgeFunction<{
     success: boolean;
     contract_id: number;
@@ -208,8 +213,8 @@ export async function executeTestTrade(params: {
       symbol: params.symbol,
       amount: params.amount,
       contract_type: contractType,
-      duration: params.durationMinutes,
-      duration_unit: "m",
+      duration: actualDuration,
+      duration_unit: actualUnit,
       source: "manual",
       account_type: params.accountType,
     },
