@@ -54,6 +54,27 @@ async function callEdgeFunction<T>(
   return data as T;
 }
 
+function normalizeDerivDuration(duration: number, unit: string) {
+  const normalizedUnit = unit || "m";
+  const numericDuration = Number(duration);
+
+  if (!Number.isFinite(numericDuration) || numericDuration <= 0) {
+    throw new ApiError("Invalid trade duration supplied", "PARSE_ERROR");
+  }
+
+  if (normalizedUnit === "m" && numericDuration % 1 !== 0) {
+    return {
+      duration: Math.round(numericDuration * 60),
+      durationUnit: "s",
+    };
+  }
+
+  return {
+    duration: Math.round(numericDuration),
+    durationUnit: normalizedUnit,
+  };
+}
+
 // ─── Public API ──────────────────────────────────────────────
 
 export async function fetchSignals(): Promise<Signal[]> {

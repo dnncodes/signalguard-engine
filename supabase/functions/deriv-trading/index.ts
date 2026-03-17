@@ -71,6 +71,31 @@ function errorResponse(message: string, status = 500) {
   return jsonResponse({ error: message }, status);
 }
 
+function normalizeDerivDuration(duration: unknown, durationUnit: unknown) {
+  const normalizedUnit = typeof durationUnit === "string" && durationUnit ? durationUnit : "m";
+  const numericDuration = Number(duration ?? 5);
+
+  if (!Number.isFinite(numericDuration) || numericDuration <= 0) {
+    throw new Error("Invalid trade duration");
+  }
+
+  if (normalizedUnit === "m" && numericDuration % 1 !== 0) {
+    return {
+      duration: Math.round(numericDuration * 60),
+      durationUnit: "s",
+      durationMinutes: numericDuration,
+    };
+  }
+
+  const safeDuration = Math.round(numericDuration);
+
+  return {
+    duration: safeDuration,
+    durationUnit: normalizedUnit,
+    durationMinutes: normalizedUnit === "s" ? safeDuration / 60 : safeDuration,
+  };
+}
+
 // Telegram bot helper
 async function sendTelegramMessage(text: string, replyMarkup?: any): Promise<void> {
   const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
