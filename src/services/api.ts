@@ -144,10 +144,10 @@ export async function executeTrade(params: {
   longcode: string;
 }> {
   // Deriv API requires integer durations. For 4.75m, use 285 seconds.
-  const dur = params.duration;
-  const isDecimal = dur % 1 !== 0;
-  const actualDuration = isDecimal ? Math.round(dur * 60) : dur;
-  const actualUnit = isDecimal ? "s" : params.durationUnit;
+  const { duration: actualDuration, durationUnit: actualUnit } = normalizeDerivDuration(
+    params.duration,
+    params.durationUnit
+  );
 
   return callEdgeFunction("buy", {
     method: "POST",
