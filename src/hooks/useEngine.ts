@@ -951,7 +951,8 @@ export function useTestTrade() {
 
       setLoading(true);
       setResult(null);
-      setQuickTradeExecuted(false);
+      // NOTE: Do NOT reset quickTradeExecuted here — it's set by quickTrade()
+      // and must persist until settlement completes.
       try {
         let tradeType: "BUY" | "SELL" = params.direction || "BUY";
         if (!params.direction) {
