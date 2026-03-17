@@ -502,7 +502,7 @@ serve(async (req: Request) => {
           contract_id: buyData.contract_id,
           transaction_id: buyData.transaction_id,
           balance_after: buyData.balance_after,
-          duration_minutes: dur,
+          duration_minutes: durationMinutes,
           account_type: actualType,
           currency: acct.currency,
           source: source || "manual",
