@@ -846,6 +846,7 @@ export function useLiveAutomation() {
               price: Number(s.price),
               score: s.score ? Number(s.score) : 0,
               confidence: s.score ? Number(s.score) : 0,
+              grade: "B" as const,
               details: s.details || "",
               logic: "",
               pattern: null,
