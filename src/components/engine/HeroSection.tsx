@@ -149,7 +149,7 @@ export function HeroSection({
           <StatCard icon={<TrendingUp size={13} />} label="Bull / Bear" value={`${stats.upCount} / ${stats.downCount}`} sub={`${stats.bullBear}% bullish`} accent={Number(stats.bullBear) >= 50 ? "buy" : "sell"} />
           <StatCard icon={<BarChart3 size={13} />} label="Signals" value={`${stats.buySignals}B / ${stats.sellSignals}S`} sub={`Avg score: ${stats.avgScore}`} accent="neutral" />
           <StatCard icon={<Target size={13} />} label="Duration" value={`${TRADE_DURATION_LIVE}m`} sub="Live trades" accent="buy" />
-          <StatCard icon={<Zap size={13} />} label="Engine" value="v3.1" sub={`${stats.totalMarkets} symbols`} accent="buy" />
+          <StatCard icon={<Zap size={13} />} label="Engine" value="v4.0" sub={`${stats.totalMarkets} symbols`} accent="buy" />
         </div>
       </div>
     </section>
