@@ -93,6 +93,10 @@ export function useSignals() {
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [engineRunning, setEngineRunning] = useState(globalGeneratorInstance?.isRunning() ?? false);
+  const [timeframe, setTimeframe] = useState(15);
+  const [trendDirections, setTrendDirections] = useState<Map<string, "up" | "down" | "neutral">>(new Map());
+  const priceHistoryRef = useRef<Map<string, { price: number; time: number }[]>>(new Map());
   const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection();
 
   // Initial load
