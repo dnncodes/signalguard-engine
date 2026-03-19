@@ -123,10 +123,9 @@ export function useSignals() {
     loadInitial();
   }, [subscribeTo]);
 
-  // Start signal generator as singleton — persists across tab navigation
+  // Initialize signal generator as singleton
   useEffect(() => {
     if (wsStatus !== "connected") return;
-
     globalGeneratorRefCount++;
 
     if (!globalGeneratorInstance) {
@@ -136,63 +135,98 @@ export function useSignals() {
       generator.onSignal(async (candidate: SignalCandidate) => {
         try {
           await api.insertSignal({
-            symbol: candidate.symbol,
-            type: candidate.type,
-            price: candidate.price,
-            details: candidate.details,
-            score: candidate.score,
-            metrics: candidate.metrics as any,
+            symbol: candidate.symbol, type: candidate.type, price: candidate.price,
+            details: candidate.details, score: candidate.score, metrics: candidate.metrics as any,
           });
-
-          try {
-            await api.sendTelegramSignal(candidate);
-          } catch (tgErr) {
-            console.warn("[Telegram] Failed to send signal:", tgErr);
+          try { await api.sendTelegramSignal(candidate); } catch (tgErr) {
+            console.warn("[Telegram] Failed:", tgErr);
           }
-        } catch (err) {
-          console.error("[SignalEngine] Failed to save signal:", err);
-        }
+        } catch (err) { console.error("[SignalEngine] Save failed:", err); }
       });
 
       generator.start(5 * 60 * 1000);
-      console.log("[SignalEngine] Singleton generator started");
+      setEngineRunning(true);
+      console.log("[v5.0] Signal Engine auto-started");
+    } else {
+      setEngineRunning(globalGeneratorInstance.isRunning());
     }
 
-    return () => {
-      globalGeneratorRefCount--;
-      // Only stop if truly no components using it
-      if (globalGeneratorRefCount <= 0 && globalGeneratorInstance) {
-        // DON'T stop — keep running even when navigating away
-        // globalGeneratorInstance.stop();
-        // globalGeneratorInstance = null;
-      }
-    };
+    return () => { globalGeneratorRefCount--; };
   }, [wsStatus]);
+
+  // Engine start/stop controls
+  const toggleEngine = useCallback(() => {
+    if (!globalGeneratorInstance) {
+      const generator = new SignalGenerator(Object.keys(SYMBOLS));
+      globalGeneratorInstance = generator;
+      generator.onSignal(async (candidate: SignalCandidate) => {
+        try {
+          await api.insertSignal({
+            symbol: candidate.symbol, type: candidate.type, price: candidate.price,
+            details: candidate.details, score: candidate.score, metrics: candidate.metrics as any,
+          });
+          try { await api.sendTelegramSignal(candidate); } catch {}
+        } catch (err) { console.error("[SignalEngine] Save failed:", err); }
+      });
+    }
+    if (globalGeneratorInstance.isRunning()) {
+      globalGeneratorInstance.stop();
+      setEngineRunning(false);
+      toast.info("🔴 Signal Engine stopped");
+    } else {
+      globalGeneratorInstance.start(5 * 60 * 1000);
+      setEngineRunning(true);
+      toast.success("🟢 Signal Engine started");
+    }
+  }, []);
+
+  // Price history for timeframe trend
+  useEffect(() => {
+    if (latestTicks.size === 0) return;
+    for (const [symbol, tick] of latestTicks) {
+      const history = priceHistoryRef.current.get(symbol) || [];
+      history.push({ price: tick.quote, time: Date.now() });
+      const cutoff = Date.now() - 20 * 60 * 1000;
+      priceHistoryRef.current.set(symbol, history.filter(h => h.time > cutoff));
+    }
+  }, [latestTicks]);
+
+  // Compute trend directions every 2s based on selected timeframe
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const newDirs = new Map<string, "up" | "down" | "neutral">();
+      const now = Date.now();
+      const lookbackMs = timeframe * 60 * 1000;
+      for (const [symbol, history] of priceHistoryRef.current) {
+        if (history.length < 2) { newDirs.set(symbol, "neutral"); continue; }
+        const current = history[history.length - 1].price;
+        const targetTime = now - lookbackMs;
+        let pastPrice = history[0].price;
+        for (const h of history) {
+          if (h.time <= targetTime) pastPrice = h.price; else break;
+        }
+        newDirs.set(symbol, current > pastPrice ? "up" : current < pastPrice ? "down" : "neutral");
+      }
+      setTrendDirections(newDirs);
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [timeframe]);
 
   // Realtime signals from database
   useEffect(() => {
     const channel = supabase
       .channel("signals-realtime")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "signals" },
-        (payload) => {
-          const s = payload.new;
-          const newSignal: Signal = {
-            id: s.id,
-            symbol: s.symbol,
-            type: s.type as "BUY" | "SELL",
-            price: Number(s.price),
-            time: s.time,
-            details: s.details || "",
-            score: s.score ? Number(s.score) : undefined,
-          };
-          setSignals((prev) => [newSignal, ...prev].slice(0, 10));
-          toast.info(`📊 ${s.type} signal: ${SYMBOLS[s.symbol] || s.symbol} (score: ${s.score || "?"})`);
-        }
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "signals" }, (payload) => {
+        const s = payload.new;
+        const newSignal: Signal = {
+          id: s.id, symbol: s.symbol, type: s.type as "BUY" | "SELL",
+          price: Number(s.price), time: s.time, details: s.details || "",
+          score: s.score ? Number(s.score) : undefined,
+        };
+        setSignals((prev) => [newSignal, ...prev].slice(0, 10));
+        toast.info(`📊 ${s.type} signal: ${SYMBOLS[s.symbol] || s.symbol} (score: ${s.score || "?"})`);
+      })
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, []);
 
@@ -207,7 +241,6 @@ export function useSignals() {
         const direction: "up" | "down" | "neutral" = prevPrice
           ? tick.quote > prevPrice ? "up" : tick.quote < prevPrice ? "down" : "neutral"
           : "neutral";
-
         const idx = updated.findIndex((m) => m.symbol === symbol);
         if (idx >= 0) {
           updated[idx] = { ...updated[idx], lastPrice: tick.quote, prevPrice, direction };
@@ -218,7 +251,6 @@ export function useSignals() {
       return updated;
     });
   }, [latestTicks, prevTicks]);
-
   return {
     signals, status: marketStatus, loading, error, wsStatus,
     engineRunning, toggleEngine,
