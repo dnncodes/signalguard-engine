@@ -219,7 +219,11 @@ export function useSignals() {
     });
   }, [latestTicks, prevTicks]);
 
-  return { signals, status: marketStatus, loading, error, wsStatus };
+  return {
+    signals, status: marketStatus, loading, error, wsStatus,
+    engineRunning, toggleEngine,
+    timeframe, setTimeframe, trendDirections,
+  };
 }
 
 // ─── useBacktest ─────────────────────────────────────────────
