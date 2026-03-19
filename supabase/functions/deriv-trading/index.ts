@@ -377,7 +377,7 @@ serve(async (req: Request) => {
     }
 
     const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN");
-    if (!DERIV_TOKEN && action !== "telegram_signal") {
+    if (!DERIV_TOKEN && !["telegram_signal", "test_token", "update_token"].includes(action)) {
       return errorResponse("DERIV_API_TOKEN not configured", 500);
     }
 
@@ -385,13 +385,42 @@ serve(async (req: Request) => {
     const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+    // ── TEST TOKEN (verify a Deriv API token) ──
+    if (action === "test_token" && req.method === "POST") {
+      const body = await req.json();
+      const token = body.token;
+      if (!token) return errorResponse("Missing token", 400);
+      let ws: WebSocket;
+      try { ws = await connectDeriv(); } catch (err) { return errorResponse(`WS failed: ${err.message}`, 502); }
+      try {
+        const authRes = await derivRequest(ws, { authorize: token });
+        if (!authRes.authorize) return jsonResponse({ valid: false, error: "Authorization failed" });
+        const acct = authRes.authorize;
+        ws.close();
+        return jsonResponse({ valid: true, loginid: acct.loginid, is_virtual: !!acct.is_virtual, balance: acct.balance, currency: acct.currency });
+      } catch (err) {
+        ws.close();
+        return jsonResponse({ valid: false, error: err.message });
+      }
+    }
+
+    // ── UPDATE TOKEN (save to engine_secrets) ──
+    if (action === "update_token" && req.method === "POST") {
+      const body = await req.json();
+      const token = body.token;
+      if (!token) return errorResponse("Missing token", 400);
+      const { error: upsertErr } = await supabase.from("engine_secrets").upsert(
+        { key: "deriv_api_token", value: token, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      );
+      if (upsertErr) return errorResponse(`Failed to save: ${upsertErr.message}`, 500);
+      return jsonResponse({ success: true, message: "Token saved" });
+    }
+
     // ── TELEGRAM SIGNAL (no Deriv WS needed) ──
     if (action === "telegram_signal" && req.method === "POST") {
       const body = await req.json();
       const message = formatSignalTelegram(body);
-      // Quick trade inline keyboard commented out — send signal text only for now
-      // const keyboard = buildQuickTradeKeyboard(body.symbol, body.type, body.price);
-      // await sendTelegramMessage(message, keyboard);
       await sendTelegramMessage(message);
       return jsonResponse({ success: true, message: "Signal sent to Telegram" });
     }
