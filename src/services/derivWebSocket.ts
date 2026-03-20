@@ -34,8 +34,22 @@ class DerivWebSocketClient {
   private pendingRequests = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timeout: ReturnType<typeof setTimeout> }>();
   private reqIdCounter = 1;
 
+  private visibilityBound = false;
+
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
+
+    // Auto-reconnect when tab becomes visible again
+    if (!this.visibilityBound && typeof document !== "undefined") {
+      this.visibilityBound = true;
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && this.status !== "connected") {
+          console.log("[DerivWS] Tab visible — reconnecting");
+          this.reconnectAttempts = 0;
+          this.connect();
+        }
+      });
+    }
 
     this.setStatus("connecting");
     this.ws = new WebSocket(DERIV_WS_URL);

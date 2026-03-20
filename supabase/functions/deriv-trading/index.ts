@@ -96,6 +96,20 @@ function normalizeDerivDuration(duration: unknown, durationUnit: unknown) {
   };
 }
 
+// Read user-updated token from engine_secrets DB (priority over env vars)
+async function getTokenFromDB(supabase: any): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from("engine_secrets")
+      .select("value")
+      .eq("key", "deriv_api_token")
+      .single();
+    return data?.value || null;
+  } catch {
+    return null;
+  }
+}
+
 // Telegram bot helper
 async function sendTelegramMessage(text: string, replyMarkup?: any): Promise<void> {
   const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");

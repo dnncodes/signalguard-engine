@@ -381,11 +381,11 @@ export function analyzeSymbol(
 
   // ════════════════════════════════════════════════════════════
   // LAYER 1: MTF TREND — 5-min candle direction (NEW in v5.0)
+  // v5.1 FIX: Compute mtfScore immediately (was always 0 before!)
   // ════════════════════════════════════════════════════════════
 
   const htf = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0 };
-  let mtfScore = 0;
-  // MTF trend gets a significant weight — it's the "big picture"
+  let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * 1.5, 15) : 0;
 
   // ════════════════════════════════════════════════════════════
   // LAYER 2: TREND — EMA9 vs EMA21 (1-min)
