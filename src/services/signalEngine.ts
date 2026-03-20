@@ -381,11 +381,11 @@ export function analyzeSymbol(
 
   // ════════════════════════════════════════════════════════════
   // LAYER 1: MTF TREND — 5-min candle direction (NEW in v5.0)
+  // v5.1 FIX: Compute mtfScore immediately (was always 0 before!)
   // ════════════════════════════════════════════════════════════
 
   const htf = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0 };
-  let mtfScore = 0;
-  // MTF trend gets a significant weight — it's the "big picture"
+  let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * 1.5, 15) : 0;
 
   // ════════════════════════════════════════════════════════════
   // LAYER 2: TREND — EMA9 vs EMA21 (1-min)
@@ -776,14 +776,13 @@ export type SignalCallback = (signal: SignalCandidate) => void;
 
 export class SignalGenerator {
   private intervalId: ReturnType<typeof setInterval> | null = null;
+  private worker: Worker | null = null;
   private callbacks: SignalCallback[] = [];
   private activeSymbols: string[] = [];
   private running = false;
   private lastSignalTime = 0;
   private readonly MIN_INTERVAL_MS = 4 * 60 * 1000;
   private recentGrades: string[] = [];
-
-  // v5.0: Track consecutive losses to raise quality bar
   private consecutiveLosses = 0;
 
   constructor(symbols: string[]) {
@@ -812,7 +811,6 @@ export class SignalGenerator {
 
     const candidates: SignalCandidate[] = [];
 
-    // v5.0: Request 5000 ticks for better MTF analysis (~83 min of 1s data)
     const analyses = await Promise.allSettled(
       this.activeSymbols.map(async (symbol) => {
         const history = await derivWs.getTickHistory(symbol, 5000);
@@ -836,7 +834,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.0] No symbols with sufficient data this cycle");
+      console.log("[v5.1] No symbols with sufficient data this cycle");
       return null;
     }
 
@@ -856,7 +854,7 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.0] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `[v5.1] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
         `Min grade required: ${minGrade} | Consecutive losses: ${this.consecutiveLosses} — SKIPPING CYCLE`
       );
       return null;
@@ -875,12 +873,11 @@ export class SignalGenerator {
 
     const best = finalCandidates[0];
 
-    // Log quality distribution
     const aCount = candidates.filter(c => c.grade === "A").length;
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.0] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
+      `[v5.1] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
@@ -897,28 +894,60 @@ export class SignalGenerator {
   start(intervalMs = 5 * 60 * 1000) {
     if (this.running) return;
     this.running = true;
-    this.intervalId = setInterval(() => this.tick(), intervalMs);
-    console.log(`[v5.0] Signal Engine Started — Smart Money + MTF Edition`);
-    console.log(`[v5.0] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
-    console.log(`[v5.0] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
-    console.log(`[v5.0] Emission: A/B grades only (C-grade suppressed)`);
+
+    // Use Web Worker timer to prevent browser throttling in background tabs
+    try {
+      const workerScript = `
+        let timerId = null;
+        self.onmessage = function(e) {
+          if (e.data.type === 'start') {
+            if (timerId) clearInterval(timerId);
+            timerId = setInterval(function() { self.postMessage('tick'); }, e.data.interval);
+            self.postMessage('tick');
+          } else if (e.data.type === 'stop') {
+            if (timerId) clearInterval(timerId);
+            timerId = null;
+          }
+        };
+      `;
+      const blob = new Blob([workerScript], { type: "application/javascript" });
+      this.worker = new Worker(URL.createObjectURL(blob));
+      this.worker.onmessage = () => this.tick();
+      this.worker.postMessage({ type: "start", interval: intervalMs });
+      console.log(`[v5.1] Signal Engine Started — Web Worker timer (background-safe)`);
+    } catch (err) {
+      // Fallback to regular interval if Workers unavailable
+      console.warn("[v5.1] Web Worker unavailable, using setInterval (will throttle in background):", err);
+      this.intervalId = setInterval(() => this.tick(), intervalMs);
+      console.log(`[v5.1] Signal Engine Started — setInterval fallback`);
+    }
+
+    console.log(`[v5.1] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
+    console.log(`[v5.1] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
+    console.log(`[v5.1] Emission: A/B grades only (C-grade suppressed)`);
   }
 
   stop() {
     this.running = false;
+    if (this.worker) {
+      this.worker.postMessage({ type: "stop" });
+      this.worker.terminate();
+      this.worker = null;
+    }
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    console.log(`[v5.0] Signal Engine Stopped`);
+    console.log(`[v5.1] Signal Engine Stopped`);
   }
 
   private async tick() {
+    if (!this.running) return;
     try {
       const now = Date.now();
       const elapsed = now - this.lastSignalTime;
       if (elapsed < this.MIN_INTERVAL_MS) {
-        console.log(`[v5.0] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
+        console.log(`[v5.1] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
         return;
       }
 
@@ -928,7 +957,7 @@ export class SignalGenerator {
         this.callbacks.forEach((cb) => cb(signal));
       }
     } catch (err) {
-      console.error("[v5.0] Tick error:", err);
+      console.error("[v5.1] Tick error:", err);
     }
   }
 

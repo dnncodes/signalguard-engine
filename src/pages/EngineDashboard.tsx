@@ -21,7 +21,7 @@ import {
 } from "@/hooks/useEngine";
 
 export default function EngineDashboard() {
-  const { signals, status, loading, error: dataError, wsStatus, engineRunning, toggleEngine, timeframe, setTimeframe, trendDirections } = useSignals();
+  const { signals, status, loading, error: dataError, wsStatus, engineRunning, toggleEngine, timeframe, setTimeframe, emaPeriod, setEmaPeriod, trendDirections } = useSignals();
   const backtest = useBacktest();
   const live = useLiveAutomation();
   const testTrade = useTestTrade();
@@ -39,7 +39,7 @@ export default function EngineDashboard() {
         tradeOpenedAt={testTrade.tradeOpenedAt}
         tradeResult={testTrade.result ? { result: testTrade.result.result, profit: testTrade.result.profit } : null}
       />
-      <MarketTicker status={status} timeframe={timeframe} onTimeframeChange={setTimeframe} trendDirections={trendDirections} />
+      <MarketTicker status={status} timeframe={timeframe} onTimeframeChange={setTimeframe} emaPeriod={emaPeriod} onEmaPeriodChange={setEmaPeriod} trendDirections={trendDirections} />
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
         {/* Connection error banner */}

@@ -95,6 +95,7 @@ export function useSignals() {
   const [error, setError] = useState<string | null>(null);
   const [engineRunning, setEngineRunning] = useState(globalGeneratorInstance?.isRunning() ?? false);
   const [timeframe, setTimeframe] = useState(15);
+  const [emaPeriod, setEmaPeriod] = useState(21);
   const [trendDirections, setTrendDirections] = useState<Map<string, "up" | "down" | "neutral">>(new Map());
   const priceHistoryRef = useRef<Map<string, { price: number; time: number }[]>>(new Map());
   const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection();
@@ -180,25 +181,45 @@ export function useSignals() {
     }
   }, []);
 
-  // Price history for timeframe trend
+  // Price history for timeframe trend — retain 30 min for EMA(100) support
   useEffect(() => {
     if (latestTicks.size === 0) return;
     for (const [symbol, tick] of latestTicks) {
       const history = priceHistoryRef.current.get(symbol) || [];
       history.push({ price: tick.quote, time: Date.now() });
-      const cutoff = Date.now() - 20 * 60 * 1000;
+      const cutoff = Date.now() - 30 * 60 * 1000;
       priceHistoryRef.current.set(symbol, history.filter(h => h.time > cutoff));
     }
   }, [latestTicks]);
 
-  // Compute trend directions every 2s based on selected timeframe
+  // Compute trend directions every 2s using EMA + timeframe
   useEffect(() => {
     const iv = setInterval(() => {
       const newDirs = new Map<string, "up" | "down" | "neutral">();
       const now = Date.now();
       const lookbackMs = timeframe * 60 * 1000;
+
       for (const [symbol, history] of priceHistoryRef.current) {
-        if (history.length < 2) { newDirs.set(symbol, "neutral"); continue; }
+        if (history.length < 5) { newDirs.set(symbol, "neutral"); continue; }
+
+        const prices = history.map(h => h.price);
+
+        // EMA-based trend: compare current price vs EMA(period)
+        if (prices.length >= emaPeriod) {
+          const emaValues = calculateEMA(prices, emaPeriod);
+          const currentPrice = prices[prices.length - 1];
+          const currentEMA = emaValues[emaValues.length - 1];
+          if (currentEMA > 0) {
+            const diff = (currentPrice - currentEMA) / currentEMA;
+            // Use threshold to avoid flickering
+            if (diff > 0.00005) newDirs.set(symbol, "up");
+            else if (diff < -0.00005) newDirs.set(symbol, "down");
+            else newDirs.set(symbol, "neutral");
+            continue;
+          }
+        }
+
+        // Fallback: simple price comparison over timeframe
         const current = history[history.length - 1].price;
         const targetTime = now - lookbackMs;
         let pastPrice = history[0].price;
@@ -210,7 +231,7 @@ export function useSignals() {
       setTrendDirections(newDirs);
     }, 2000);
     return () => clearInterval(iv);
-  }, [timeframe]);
+  }, [timeframe, emaPeriod]);
 
   // Realtime signals from database
   useEffect(() => {
@@ -254,7 +275,7 @@ export function useSignals() {
   return {
     signals, status: marketStatus, loading, error, wsStatus,
     engineRunning, toggleEngine,
-    timeframe, setTimeframe, trendDirections,
+    timeframe, setTimeframe, emaPeriod, setEmaPeriod, trendDirections,
   };
 }
 
