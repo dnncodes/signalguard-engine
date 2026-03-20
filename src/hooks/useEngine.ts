@@ -181,13 +181,13 @@ export function useSignals() {
     }
   }, []);
 
-  // Price history for timeframe trend
+  // Price history for timeframe trend — retain 30 min for EMA(100) support
   useEffect(() => {
     if (latestTicks.size === 0) return;
     for (const [symbol, tick] of latestTicks) {
       const history = priceHistoryRef.current.get(symbol) || [];
       history.push({ price: tick.quote, time: Date.now() });
-      const cutoff = Date.now() - 20 * 60 * 1000;
+      const cutoff = Date.now() - 30 * 60 * 1000;
       priceHistoryRef.current.set(symbol, history.filter(h => h.time > cutoff));
     }
   }, [latestTicks]);

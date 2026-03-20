@@ -248,7 +248,7 @@ class DerivWebSocketClient {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ ping: 1 }));
       }
-    }, 30000);
+    }, 15000); // 15s heartbeat (more aggressive for background reliability)
   }
 
   private stopHeartbeat() {
