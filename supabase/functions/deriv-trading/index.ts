@@ -481,7 +481,7 @@ serve(async (req: Request) => {
     }
 
     try {
-      const { auth: acct, actualType } = await authorizeForAccount(ws, requestedAccountType);
+      const { auth: acct, actualType } = await authorizeForAccount(ws, requestedAccountType, supabase);
 
       console.log(`[deriv-trading] Authorized: ${acct.loginid} (${actualType}) | Balance: ${acct.balance} ${acct.currency} | Action: ${action} | Requested: ${requestedAccountType}`);
 
