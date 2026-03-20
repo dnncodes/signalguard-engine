@@ -21,7 +21,7 @@ import {
 } from "@/hooks/useEngine";
 
 export default function EngineDashboard() {
-  const { signals, status, loading, error: dataError, wsStatus, engineRunning, toggleEngine, timeframe, setTimeframe, trendDirections } = useSignals();
+  const { signals, status, loading, error: dataError, wsStatus, engineRunning, toggleEngine, timeframe, setTimeframe, emaPeriod, setEmaPeriod, trendDirections } = useSignals();
   const backtest = useBacktest();
   const live = useLiveAutomation();
   const testTrade = useTestTrade();
