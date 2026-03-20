@@ -316,15 +316,27 @@ function formatSettlementTelegram(contractId: number, symbol: string, profit: nu
   return lines.join("\n");
 }
 
-// ─── Account Authorization (ROBUST) ─────────────────────────
+// ─── Account Authorization (ROBUST + DB Token Support) ──────
 
 async function authorizeForAccount(
   ws: WebSocket,
-  requestedAccountType: "demo" | "live"
+  requestedAccountType: "demo" | "live",
+  supabase: any
 ): Promise<{ auth: any; actualType: "demo" | "live" }> {
-  const DERIV_TOKEN = Deno.env.get("DERIV_API_TOKEN");
+  // Priority 1: User-updated token from engine_secrets DB
+  const dbToken = await getTokenFromDB(supabase);
+  // Priority 2: Environment variables
+  const envToken = Deno.env.get("DERIV_API_TOKEN");
   const DERIV_LIVE_TOKEN = Deno.env.get("DERIV_LIVE_API_TOKEN");
   
+  // Select primary token: DB token takes precedence over env
+  const DERIV_TOKEN = dbToken || envToken;
+
+  if (dbToken) {
+    console.log("[deriv-trading] Using user-updated token from engine_secrets DB");
+  }
+
+  // For live accounts, try dedicated live token first
   if (requestedAccountType === "live" && DERIV_LIVE_TOKEN) {
     console.log("[deriv-trading] Using dedicated DERIV_LIVE_API_TOKEN for live account");
     const authRes = await derivRequest(ws, { authorize: DERIV_LIVE_TOKEN });
@@ -336,20 +348,21 @@ async function authorizeForAccount(
     return { auth: authRes.authorize, actualType: "live" };
   }
 
-  if (!DERIV_TOKEN) throw new Error("DERIV_API_TOKEN not configured");
+  if (!DERIV_TOKEN) throw new Error("DERIV_API_TOKEN not configured. Update your token via the Key icon in the header.");
   
   const authRes = await derivRequest(ws, { authorize: DERIV_TOKEN });
-  if (!authRes.authorize) throw new Error("Deriv authorization failed");
+  if (!authRes.authorize) throw new Error("Deriv authorization failed — token may be invalid or expired");
   
   const initialAuth = authRes.authorize;
   const isCurrentVirtual = !!initialAuth.is_virtual;
   const wantVirtual = requestedAccountType === "demo";
 
   if (isCurrentVirtual === wantVirtual) {
-    console.log(`[deriv-trading] Default token matches ${requestedAccountType}: ${initialAuth.loginid}`);
+    console.log(`[deriv-trading] Token matches ${requestedAccountType}: ${initialAuth.loginid} (source: ${dbToken ? "DB" : "env"})`);
     return { auth: initialAuth, actualType: requestedAccountType };
   }
 
+  // Try account switching via account_list
   const accountList = initialAuth.account_list || [];
   const targetAccount = accountList.find((acc: any) =>
     wantVirtual ? acc.is_virtual === 1 : acc.is_virtual === 0
@@ -368,7 +381,8 @@ async function authorizeForAccount(
   if (requestedAccountType === "live") {
     const msg = `Cannot switch to live account. Your API token doesn't have 'admin' scope for account switching. ` +
       `Please either: (1) Create a new API token with 'Admin' scope on deriv.com, or ` +
-      `(2) Add a dedicated live account token as DERIV_LIVE_API_TOKEN secret.`;
+      `(2) Add a dedicated live account token as DERIV_LIVE_API_TOKEN secret, or ` +
+      `(3) Update your token via the Key icon in the header with a live account token.`;
     console.error(`[deriv-trading] ${msg}`);
     throw new Error(msg);
   }
