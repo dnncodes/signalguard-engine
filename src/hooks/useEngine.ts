@@ -275,7 +275,7 @@ export function useSignals() {
   return {
     signals, status: marketStatus, loading, error, wsStatus,
     engineRunning, toggleEngine,
-    timeframe, setTimeframe, trendDirections,
+    timeframe, setTimeframe, emaPeriod, setEmaPeriod, trendDirections,
   };
 }
 
