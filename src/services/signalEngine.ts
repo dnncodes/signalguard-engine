@@ -878,14 +878,22 @@ export function analyzeSymbol(
       volatility_state: volState,
       layers_passed: layersPassed,
       expectancy,
-      htf_trend_5m: htf.direction,
+      htf_trend_5m: htf.htf5m.direction,
+      htf_trend_15m: htf.htf15m.direction,
       mtf_aligned: mtfAligned,
       smc_signal: smc.description,
+      // v5.2 Quant Math metrics
+      std_dev: currentStdDev,
+      lin_reg_slope: currentLinRegSlope,
+      lin_reg_r2: currentR2,
+      lin_reg_deviation: currentLinRegDev,
+      z_score: currentZScore,
+      quant_score: quantScore,
     },
   };
 }
 
-// ─── Signal Generator (v5.0) ────────────────────────────────
+// ─── Signal Generator (v5.2) ────────────────────────────────
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
