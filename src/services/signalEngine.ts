@@ -807,6 +807,8 @@ export function analyzeSymbol(
   if (currentPercentB <= 0.10 || currentPercentB >= 0.90) patterns.push("BB EXTREME");
   if (smc.description) patterns.push(`SMC: ${smc.description}`);
   if (hardGateApplied) patterns.push("HARD GATE APPLIED");
+  if (currentR2 > 0.7) patterns.push(`LINREG R²:${(currentR2 * 100).toFixed(0)}%`);
+  if (Math.abs(currentZScore) > 2.0) patterns.push(`ZSCORE:${currentZScore.toFixed(1)}`);
   const pattern = patterns.length > 0 ? patterns.join(" + ") : null;
 
   // Logic summary
