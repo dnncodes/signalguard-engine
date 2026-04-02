@@ -396,6 +396,7 @@ export function analyzeSymbol(
   // ── Compute all 1-min indicators ──
   const ema9 = calculateEMA(prices, 9);
   const ema21 = calculateEMA(prices, 21);
+  const ema50 = calculateEMA(prices, Math.min(50, prices.length - 1));
   const rsi = calculateRSI(prices, 14);
   const { histogram } = calculateMACD(prices);
   const atr = calculateATR(prices, 14);
@@ -403,6 +404,10 @@ export function analyzeSymbol(
   const emaGap = calculateEMAGap(ema9, ema21, prices);
   const bb = calculateBollingerBands(prices, 20, 2);
   const stoch = calculateStochastic(prices, 14, 3);
+  // v5.2: Quant Math indicators
+  const stdDev = calculateStdDev(prices, 20);
+  const linReg = calculateLinearRegression(prices, 20);
+  const zScore = calculateZScore(prices, 20);
 
   const last = prices.length - 1;
   const currentPrice = prices[last];
@@ -414,6 +419,12 @@ export function analyzeSymbol(
   const currentEMAGap = emaGap[last];
   const currentPercentB = bb.percentB[last];
   const currentBandwidth = bb.bandwidth[last];
+  // v5.2: Quant values
+  const currentStdDev = stdDev[last];
+  const currentLinRegSlope = linReg.slope[last];
+  const currentR2 = linReg.r2[last];
+  const currentLinRegDev = linReg.deviation[last];
+  const currentZScore = zScore[last];
 
   // ════════════════════════════════════════════════════════════
   // LAYER 0: NOISE GATE — Volatility Filter
