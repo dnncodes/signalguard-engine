@@ -155,7 +155,7 @@ export function useSignals() {
     return () => { globalGeneratorRefCount--; };
   }, [wsStatus]);
 
-  // Engine start/stop controls
+  // Engine start/stop controls — also controls WebSocket connection
   const toggleEngine = useCallback(() => {
     if (!globalGeneratorInstance) {
       const generator = new SignalGenerator(Object.keys(SYMBOLS));
@@ -172,12 +172,18 @@ export function useSignals() {
     }
     if (globalGeneratorInstance.isRunning()) {
       globalGeneratorInstance.stop();
+      // Disconnect WebSocket when engine is off
+      derivWs.disconnect();
       setEngineRunning(false);
-      toast.info("🔴 Signal Engine stopped");
+      toast.info("🔴 Signal Engine stopped — WebSocket disconnected");
     } else {
+      // Reconnect WebSocket when engine starts
+      derivWs.connect();
+      const symbolKeys = Object.keys(SYMBOLS);
+      symbolKeys.forEach((s) => derivWs.subscribeTicks(s));
       globalGeneratorInstance.start(5 * 60 * 1000);
       setEngineRunning(true);
-      toast.success("🟢 Signal Engine started");
+      toast.success("🟢 Signal Engine started — WebSocket connected");
     }
   }, []);
 
