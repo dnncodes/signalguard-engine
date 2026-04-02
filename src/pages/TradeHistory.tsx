@@ -96,6 +96,40 @@ export default function TradeHistory() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
+        {/* Summary Stats Bar */}
+        {!loading && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <StatCard
+              label="Total Trades"
+              value={String(trades.length)}
+              icon={<BarChart3 size={14} className="text-[hsl(var(--status-info))]" />}
+            />
+            <StatCard
+              label="Win Rate"
+              value={(() => {
+                const settled = trades.filter((t) => t.result === "WIN" || t.result === "LOSS");
+                const wins = settled.filter((t) => t.result === "WIN").length;
+                return settled.length > 0 ? `${((wins / settled.length) * 100).toFixed(1)}%` : "—";
+              })()}
+              icon={<TrendingUp size={14} className="text-[hsl(var(--signal-buy))]" />}
+            />
+            <StatCard
+              label="Net P&L"
+              value={(() => {
+                const pnl = trades.reduce((sum, t) => sum + (t.profit || 0), 0);
+                return `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+              })()}
+              icon={<DollarSign size={14} className="text-[hsl(var(--signal-buy))]" />}
+              positive={trades.reduce((sum, t) => sum + (t.profit || 0), 0) >= 0}
+            />
+            <StatCard
+              label="Sessions"
+              value={String(backtests.length)}
+              icon={<Clock size={14} className="text-[hsl(var(--engine-text-muted))]" />}
+            />
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="flex gap-1 mb-8 p-1 bg-[hsl(var(--engine-surface))] rounded-lg w-fit border border-[hsl(var(--engine-border))]">
           <TabButton active={tab === "live"} onClick={() => setTab("live")} icon={<DollarSign size={12} />} label={`Automated (${liveTrades.length})`} />
@@ -118,7 +152,7 @@ export default function TradeHistory() {
             deletingIds={deletingIds}
           />
         ) : tab === "manual" ? (
-          <TradesTable
+          <SessionGroupedTrades
             trades={manualTrades}
             title="Manual Trades"
             icon={<Wrench size={16} className="text-[hsl(var(--status-info))]" />}
