@@ -147,7 +147,7 @@ export function useSignals() {
 
       generator.start(5 * 60 * 1000);
       setEngineRunning(true);
-      console.log("[v5.0] Signal Engine auto-started");
+      console.log("[v5.2] Signal Engine auto-started");
     } else {
       setEngineRunning(globalGeneratorInstance.isRunning());
     }

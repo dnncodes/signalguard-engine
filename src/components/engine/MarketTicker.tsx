@@ -18,7 +18,7 @@ export function MarketTicker({
   status,
   timeframe = 15,
   onTimeframeChange,
-  emaPeriod = 21,
+  emaPeriod = 50,
   onEmaPeriodChange,
   trendDirections,
 }: MarketTickerProps) {
