@@ -252,7 +252,7 @@ function formatSignalTelegram(body: any): string {
     `💡 <b>Logic:</b> ${logic || details || "—"}`,
     ``,
     `📌 <i>5-min scalping | Best of ${Object.keys(SYMBOL_NAMES).length} markets</i>`,
-    `🤖 <i>DNN Deriv Engine v5.0 SMC+MTF</i>`
+    `🤖 <i>DNN Deriv Engine v5.2 QUANT+SMC+MTF</i>`
   );
 
   return lines.join("\n");
