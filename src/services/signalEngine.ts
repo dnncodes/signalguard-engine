@@ -37,6 +37,9 @@ import {
   calculateEMAGap,
   calculateBollingerBands,
   calculateStochastic,
+  calculateStdDev,
+  calculateLinearRegression,
+  calculateZScore,
 } from "./indicators";
 import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPattern } from "./patterns";
 
