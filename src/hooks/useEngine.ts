@@ -472,7 +472,7 @@ export function useBacktest() {
           if (martingaleLevel >= config.maxMartingaleLevel) {
             stopReason = "martingale";
           } else {
-            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
+            tradeAmount = Math.floor(currentTradeAmount * config.martingaleMultiplier * 100) / 100;
           }
         }
 
