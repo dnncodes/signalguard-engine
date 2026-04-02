@@ -153,11 +153,14 @@ export async function executeTrade(params: {
     params.durationUnit
   );
 
+  // Normalize amount to 2 decimal places (Deriv rejects > 2dp)
+  const safeAmount = normalizeAmount(params.amount);
+
   return callEdgeFunction("buy", {
     method: "POST",
     body: {
       symbol: params.symbol,
-      amount: params.amount,
+      amount: safeAmount,
       contract_type: params.contractType,
       duration: actualDuration,
       duration_unit: actualUnit,
