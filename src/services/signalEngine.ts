@@ -700,7 +700,7 @@ export function analyzeSymbol(
       type = "SELL";
       conflictPenalty += 15;
       hardGateApplied = true;
-      console.log(`[v5.0] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced SELL`);
+      console.log(`[v5.2] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced SELL`);
     }
   }
 
@@ -710,7 +710,7 @@ export function analyzeSymbol(
       type = "BUY";
       conflictPenalty += 15;
       hardGateApplied = true;
-      console.log(`[v5.0] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced BUY`);
+      console.log(`[v5.2] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced BUY`);
     }
   }
 
@@ -965,7 +965,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.1] No symbols with sufficient data this cycle");
+      console.log("[v5.2] No symbols with sufficient data this cycle");
       return null;
     }
 
@@ -985,7 +985,7 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.1] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `[v5.2] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
         `Min grade required: ${minGrade} | Consecutive losses: ${this.consecutiveLosses} — SKIPPING CYCLE`
       );
       return null;
@@ -1008,7 +1008,7 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.1] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
+      `[v5.2] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
@@ -1045,17 +1045,17 @@ export class SignalGenerator {
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
       this.worker.postMessage({ type: "start", interval: intervalMs });
-      console.log(`[v5.1] Signal Engine Started — Web Worker timer (background-safe)`);
+      console.log(`[v5.2] Signal Engine Started — Web Worker timer (background-safe)`);
     } catch (err) {
       // Fallback to regular interval if Workers unavailable
-      console.warn("[v5.1] Web Worker unavailable, using setInterval (will throttle in background):", err);
+      console.warn("[v5.2] Web Worker unavailable, using setInterval (will throttle in background):", err);
       this.intervalId = setInterval(() => this.tick(), intervalMs);
-      console.log(`[v5.1] Signal Engine Started — setInterval fallback`);
+      console.log(`[v5.2] Signal Engine Started — setInterval fallback`);
     }
 
-    console.log(`[v5.1] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
-    console.log(`[v5.1] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
-    console.log(`[v5.1] Emission: A/B grades only (C-grade suppressed)`);
+    console.log(`[v5.2] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
+    console.log(`[v5.2] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
+    console.log(`[v5.2] Emission: A/B grades only (C-grade suppressed)`);
   }
 
   stop() {
@@ -1069,7 +1069,7 @@ export class SignalGenerator {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    console.log(`[v5.1] Signal Engine Stopped`);
+    console.log(`[v5.2] Signal Engine Stopped`);
   }
 
   private async tick() {
@@ -1078,7 +1078,7 @@ export class SignalGenerator {
       const now = Date.now();
       const elapsed = now - this.lastSignalTime;
       if (elapsed < this.MIN_INTERVAL_MS) {
-        console.log(`[v5.1] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
+        console.log(`[v5.2] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
         return;
       }
 
@@ -1088,7 +1088,7 @@ export class SignalGenerator {
         this.callbacks.forEach((cb) => cb(signal));
       }
     } catch (err) {
-      console.error("[v5.1] Tick error:", err);
+      console.error("[v5.2] Tick error:", err);
     }
   }
 
