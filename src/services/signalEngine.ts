@@ -86,8 +86,16 @@ export interface SignalCandidate {
     layers_passed: number;
     expectancy: number;
     htf_trend_5m: number;
+    htf_trend_15m: number;
     mtf_aligned: boolean;
     smc_signal: string | null;
+    // v5.2 Quant Math
+    std_dev: number;
+    lin_reg_slope: number;
+    lin_reg_r2: number;
+    lin_reg_deviation: number;
+    z_score: number;
+    quant_score: number;
   };
 }
 
