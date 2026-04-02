@@ -1,8 +1,12 @@
 /**
- * Signal Analysis Engine v5.0 — "Smart Money + Multi-Timeframe" Edition
+ * Signal Analysis Engine v5.2 — "Quant Math + Smart Money + MTF" Edition
  *
- * KEY IMPROVEMENTS OVER v4.0:
- * ─ Multi-Timeframe Confluence: 5-min candle trend must confirm 1-min signal
+ * KEY IMPROVEMENTS OVER v5.1:
+ * ─ Layer 8: QUANT MATH — Standard Deviation, Linear Regression R², Z-Score
+ * ─ 15-min HTF default (institutional standard for noise filtering)
+ * ─ EMA(50) as primary trend filter
+ * ─ Amount normalization to 2 decimal places throughout
+ * ─ Multi-Timeframe Confluence: 5-min + 15-min candle trend confirms 1-min
  * ─ Fixed Stochastic: K>80 = OVERBOUGHT regardless of crossover
  * ─ Hard Directional Gates: Zone extreme + Stoch extreme = HARD LOCK direction
  * ─ Smart Money: Fair Value Gap + Break of Structure detection
