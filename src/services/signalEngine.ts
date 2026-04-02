@@ -740,13 +740,19 @@ export function analyzeSymbol(
     if (macdDirection !== trendDir) conflictPenalty += 5;
   }
 
-  // MTF disagreement penalty (v5.0)
+  // MTF disagreement penalty (v5.2: 15m takes priority)
   const mtfAligned = htf.direction === 0 || (type === "BUY" ? htf.direction > 0 : htf.direction < 0);
   if (htf.direction !== 0 && !mtfAligned) {
-    conflictPenalty += 12; // Significant penalty for trading against higher timeframe
-    console.log(`[v5.0] MTF CONFLICT: 5min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type}`);
+    conflictPenalty += 15; // Heavier penalty for 15m disagreement
+    console.log(`[v5.2] MTF CONFLICT: 15min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type}`);
   } else if (mtfAligned && htf.direction !== 0) {
     mtfScore = 15; // Bonus for MTF alignment
+  }
+
+  // Quant conflict: R² strong but direction disagrees
+  if (currentR2 > 0.7 && quantDirection !== 0) {
+    const signalDir = type === "BUY" ? 1 : -1;
+    if (quantDirection !== signalDir) conflictPenalty += 7;
   }
 
   // Noise penalties
@@ -754,11 +760,11 @@ export function analyzeSymbol(
   if (rsiIsChoppy) conflictPenalty += 8;
 
   // ════════════════════════════════════════════════════════════
-  // COMPOSITE SCORE (v5.0 — linear additive, no multiplicative dilution)
+  // COMPOSITE SCORE (v5.2 — linear additive with quant layer)
   // ════════════════════════════════════════════════════════════
 
   const rawScore = mtfScore + trendScore + zoneScore + exhaustionScore +
-    momentumScore + rsiScore + patternBonus + smcScore + slopeScore;
+    momentumScore + rsiScore + patternBonus + smcScore + slopeScore + quantScore;
 
   const penalizedScore = Math.max(rawScore - conflictPenalty, 0);
 
