@@ -815,12 +815,14 @@ export function analyzeSymbol(
   const logicParts: string[] = [];
   logicParts.push(`Grade:${grade}`);
   if (htf.direction !== 0) logicParts.push(`MTF:${htf.direction > 0 ? "↑" : "↓"}(${mtfAligned ? "✓" : "✗"})`);
+  if (htf.htf15m.direction !== 0) logicParts.push(`15m:${htf.htf15m.direction > 0 ? "↑" : "↓"}`);
   if (trendConfirmed) logicParts.push(`Trend:${trendUp ? "↑" : "↓"}`);
   else logicParts.push("Trend:⚠️");
   logicParts.push(`Zone:${zone.position}`);
   logicParts.push(`RSI:${currentRSI.toFixed(0)}`);
   logicParts.push(`Stoch:${stoch.k[last].toFixed(0)}(${stochZone.signal})`);
   logicParts.push(`${layersPassed}/${layers.length} layers`);
+  if (currentR2 > 0.5) logicParts.push(`R²:${(currentR2 * 100).toFixed(0)}%`);
   if (isNoisyMarket) logicParts.push(`Vol:${volState}`);
   if (smc.description) logicParts.push(`SMC:${smc.description}`);
   logicParts.push(expectancy > 0 ? `E+:${(expectancy * 100).toFixed(1)}%` : `E-:${(expectancy * 100).toFixed(1)}%`);
