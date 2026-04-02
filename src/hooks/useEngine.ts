@@ -447,7 +447,7 @@ export function useBacktest() {
           (best.type === "BUY" && best.exitPrice > best.entryPrice) ||
           (best.type === "SELL" && best.exitPrice < best.entryPrice);
 
-        const currentTradeAmount = tradeAmount;
+        const currentTradeAmount = Math.floor(tradeAmount * 100) / 100;
         const payout = currentTradeAmount * 0.85;
 
         const tradePlacedAtLevel = martingaleLevel;
