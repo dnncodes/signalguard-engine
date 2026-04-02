@@ -513,7 +513,9 @@ serve(async (req: Request) => {
         if (!symbol || !amount || !contract_type) {
           return errorResponse("Missing: symbol, amount, contract_type", 400);
         }
-        if (amount < 0.35) {
+        // Normalize amount to 2 decimal places (Deriv rejects >2dp)
+        const safeAmount = Math.floor(Number(amount) * 100) / 100;
+        if (safeAmount < 0.35) {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
