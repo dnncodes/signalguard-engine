@@ -817,7 +817,7 @@ export function useLiveAutomation() {
       return;
     }
 
-    const tradeAmount = Math.max(globalAuto.martingale.nextAmount, 0.35);
+    const tradeAmount = Math.max(Math.floor(globalAuto.martingale.nextAmount * 100) / 100, 0.35);
     const contractType = signal.type === "BUY" ? "CALL" : "PUT";
 
     globalAuto.tradeLocked = true;

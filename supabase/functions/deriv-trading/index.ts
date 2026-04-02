@@ -531,7 +531,7 @@ serve(async (req: Request) => {
 
         const proposalRes = await derivRequest(ws, {
           proposal: 1,
-          amount,
+          amount: safeAmount,
           basis: "stake",
           contract_type,
           currency: acct.currency,
