@@ -168,6 +168,22 @@ export default function TradeHistory() {
   );
 }
 
+// ─── Stat Card ───────────────────────────────────────────────
+
+function StatCard({ label, value, icon, positive }: { label: string; value: string; icon: React.ReactNode; positive?: boolean }) {
+  return (
+    <div className="engine-panel rounded-lg p-4 flex items-center gap-3">
+      <div className="w-8 h-8 rounded-md bg-[hsl(var(--engine-surface))] flex items-center justify-center">{icon}</div>
+      <div>
+        <p className="text-[8px] text-[hsl(var(--engine-text-dim))] font-mono font-bold uppercase tracking-widest">{label}</p>
+        <p className={`text-sm font-black font-mono ${positive === true ? "text-[hsl(var(--signal-buy))]" : positive === false ? "text-[hsl(var(--signal-sell))]" : "text-[hsl(var(--engine-text-primary))]"}`}>
+          {value}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab Button ──────────────────────────────────────────────
 
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
