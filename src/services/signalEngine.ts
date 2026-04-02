@@ -1053,9 +1053,9 @@ export class SignalGenerator {
       console.log(`[v5.2] Signal Engine Started — setInterval fallback`);
     }
 
-    console.log(`[v5.2] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
-    console.log(`[v5.2] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
-    console.log(`[v5.2] Emission: A/B grades only (C-grade suppressed)`);
+    console.log(`[v5.2] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant(StdDev+LinReg+Z)`);
+    console.log(`[v5.2] Filters: Hard Gates + Noise Gate + RSI Chop + MTF(15m) Conflict + Quant R² + Loss Streak`);
+    console.log(`[v5.2] Emission: A/B grades only (C-grade suppressed) | Default: 15m TF + EMA(50)`);
   }
 
   stop() {
