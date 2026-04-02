@@ -438,7 +438,7 @@ export function analyzeSymbol(
   // v5.1 FIX: Compute mtfScore immediately (was always 0 before!)
   // ════════════════════════════════════════════════════════════
 
-  const htf = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0 };
+  const htf: HTFResult = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
   let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * 1.5, 15) : 0;
 
   // ════════════════════════════════════════════════════════════
