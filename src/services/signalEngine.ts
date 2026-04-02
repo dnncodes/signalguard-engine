@@ -125,26 +125,62 @@ function buildCandles(prices: number[], times: number[], intervalSec: number): C
 }
 
 // ─── Multi-Timeframe Trend ───────────────────────────────────
-// Compute higher timeframe trend from 5-min candles
+// Compute higher timeframe trend from 5-min AND 15-min candles (institutional standard)
 
-function computeHTFTrend(prices: number[], times: number[]): { direction: number; strength: number } {
-  if (!times || times.length < 100) return { direction: 0, strength: 0 };
+interface HTFResult {
+  direction: number;
+  strength: number;
+  htf5m: { direction: number; strength: number };
+  htf15m: { direction: number; strength: number };
+}
 
-  const candles5m = buildCandles(prices, times, 300); // 5-min candles
-  if (candles5m.length < 9) return { direction: 0, strength: 0 };
+function computeHTFTrend(prices: number[], times: number[]): HTFResult {
+  const result: HTFResult = { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
+  if (!times || times.length < 100) return result;
 
-  const closes = candles5m.map(c => c.close);
-  const ema9 = calculateEMA(closes, Math.min(9, closes.length - 1));
-  const ema21 = closes.length >= 21
-    ? calculateEMA(closes, 21)
-    : calculateEMA(closes, Math.min(closes.length - 1, 5));
+  // 5-min candles
+  const candles5m = buildCandles(prices, times, 300);
+  if (candles5m.length >= 9) {
+    const closes = candles5m.map(c => c.close);
+    const ema9 = calculateEMA(closes, Math.min(9, closes.length - 1));
+    const ema21 = closes.length >= 21
+      ? calculateEMA(closes, 21)
+      : calculateEMA(closes, Math.min(closes.length - 1, 5));
+    const last = closes.length - 1;
+    const emaDiff = ema9[last] - ema21[last];
+    result.htf5m = {
+      direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+    };
+  }
 
-  const last = closes.length - 1;
-  const emaDiff = ema9[last] - ema21[last];
-  const direction = emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0;
-  const strength = closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0;
+  // 15-min candles (institutional noise filter)
+  const candles15m = buildCandles(prices, times, 900);
+  if (candles15m.length >= 5) {
+    const closes = candles15m.map(c => c.close);
+    const period = Math.min(9, closes.length - 1);
+    const ema = calculateEMA(closes, period);
+    const ema50 = closes.length >= 50
+      ? calculateEMA(closes, 50)
+      : calculateEMA(closes, Math.min(closes.length - 1, period));
+    const last = closes.length - 1;
+    const emaDiff = ema[last] - ema50[last];
+    result.htf15m = {
+      direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+    };
+  }
 
-  return { direction, strength };
+  // Combined: 15m takes priority (institutional), 5m confirms
+  if (result.htf15m.direction !== 0) {
+    result.direction = result.htf15m.direction;
+    result.strength = result.htf15m.strength + (result.htf5m.direction === result.htf15m.direction ? result.htf5m.strength * 0.5 : 0);
+  } else {
+    result.direction = result.htf5m.direction;
+    result.strength = result.htf5m.strength;
+  }
+
+  return result;
 }
 
 // ─── Volatility State Detection ──────────────────────────────

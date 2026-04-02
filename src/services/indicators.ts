@@ -192,3 +192,101 @@ export function calculateStochastic(prices: number[], kPeriod = 14, dPeriod = 3)
 
   return { k, d };
 }
+
+// ─── Standard Deviation (rolling) ────────────────────────────
+
+export function calculateStdDev(prices: number[], period = 20): number[] {
+  const len = prices.length;
+  const result: number[] = new Array(len).fill(0);
+
+  for (let i = period - 1; i < len; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += prices[j];
+    const mean = sum / period;
+
+    let sqSum = 0;
+    for (let j = i - period + 1; j <= i; j++) sqSum += (prices[j] - mean) ** 2;
+    result[i] = Math.sqrt(sqSum / period);
+  }
+
+  return result;
+}
+
+// ─── Linear Regression (slope + R² + deviation) ─────────────
+// Returns: slope (direction/momentum), r2 (fit quality), deviation (distance from regression line)
+
+export interface LinearRegressionResult {
+  slope: number[];      // Rate of change per bar
+  r2: number[];         // Coefficient of determination (0-1, higher = stronger trend)
+  deviation: number[];  // Current price distance from regression line (in price units)
+  predicted: number[];  // Regression predicted value at each bar
+}
+
+export function calculateLinearRegression(prices: number[], period = 20): LinearRegressionResult {
+  const len = prices.length;
+  const slope: number[] = new Array(len).fill(0);
+  const r2: number[] = new Array(len).fill(0);
+  const deviation: number[] = new Array(len).fill(0);
+  const predicted: number[] = new Array(len).fill(0);
+
+  for (let i = period - 1; i < len; i++) {
+    // Least squares regression over window
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    const n = period;
+
+    for (let j = 0; j < n; j++) {
+      const x = j;
+      const y = prices[i - period + 1 + j];
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumX2 += x * x;
+      sumY2 += y * y;
+    }
+
+    const denom = n * sumX2 - sumX * sumX;
+    if (denom === 0) continue;
+
+    const m = (n * sumXY - sumX * sumY) / denom;
+    const b = (sumY - m * sumX) / n;
+
+    slope[i] = m;
+    predicted[i] = m * (n - 1) + b; // Value at the last bar of the window
+    deviation[i] = prices[i] - predicted[i];
+
+    // R² calculation
+    const yMean = sumY / n;
+    let ssTot = 0, ssRes = 0;
+    for (let j = 0; j < n; j++) {
+      const y = prices[i - period + 1 + j];
+      const yHat = m * j + b;
+      ssTot += (y - yMean) ** 2;
+      ssRes += (y - yHat) ** 2;
+    }
+    r2[i] = ssTot > 0 ? Math.max(0, 1 - ssRes / ssTot) : 0;
+  }
+
+  return { slope, r2, deviation, predicted };
+}
+
+// ─── Z-Score (standardized deviation) ────────────────────────
+// How many standard deviations the current price is from the mean
+
+export function calculateZScore(prices: number[], period = 20): number[] {
+  const len = prices.length;
+  const result: number[] = new Array(len).fill(0);
+
+  for (let i = period - 1; i < len; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += prices[j];
+    const mean = sum / period;
+
+    let sqSum = 0;
+    for (let j = i - period + 1; j <= i; j++) sqSum += (prices[j] - mean) ** 2;
+    const stdDev = Math.sqrt(sqSum / period);
+
+    result[i] = stdDev > 0 ? (prices[i] - mean) / stdDev : 0;
+  }
+
+  return result;
+}
