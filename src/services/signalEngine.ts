@@ -579,6 +579,56 @@ export function analyzeSymbol(
   const slopeDirection = currentSlope > 0 ? 1 : currentSlope < 0 ? -1 : 0;
 
   // ════════════════════════════════════════════════════════════
+  // LAYER 8: QUANT MATH — Standard Deviation, Linear Regression, Z-Score (v5.2)
+  // ════════════════════════════════════════════════════════════
+
+  let quantScore = 0;
+  let quantDirection = 0;
+
+  // Linear Regression: R² > 0.7 means strong trend, slope gives direction
+  if (currentR2 > 0.7) {
+    // Strong linear trend — trust it
+    quantDirection = currentLinRegSlope > 0 ? 1 : currentLinRegSlope < 0 ? -1 : 0;
+    quantScore += Math.min(currentR2 * 10, 8); // max 8 from R²
+  } else if (currentR2 < 0.3) {
+    // Weak trend (choppy) — penalty applied via noise gate
+    quantScore += 0;
+  }
+
+  // Z-Score: extreme values indicate mean-reversion opportunity
+  if (Math.abs(currentZScore) > 2.0) {
+    // Price >2 std devs from mean → mean-reversion signal
+    const zDir = currentZScore > 0 ? -1 : 1; // Sell if above mean, Buy if below
+    if (quantDirection === 0) quantDirection = zDir;
+    else if (quantDirection === zDir) quantScore += 5; // Reinforces
+    else quantScore -= 3; // Conflicts
+  }
+
+  // Regression deviation: if price is far from regression line in trend direction
+  if (currentPrice > 0) {
+    const devPct = Math.abs(currentLinRegDev) / currentPrice * 100;
+    if (devPct > 0.05 && currentR2 > 0.5) {
+      // Price deviating from strong trend line — possible snapback
+      const devDir = currentLinRegDev > 0 ? -1 : 1; // Above line → sell bias, below → buy bias
+      if (devDir === quantDirection) quantScore += 3;
+    }
+  }
+
+  // Std Dev rate of change: increasing vol = breakout, decreasing = consolidation
+  if (last >= 5 && stdDev[last - 5] > 0) {
+    const stdDevChange = (currentStdDev - stdDev[last - 5]) / stdDev[last - 5];
+    if (stdDevChange > 0.3) {
+      // Volatility expanding — favor trend continuation
+      quantScore += 2;
+    } else if (stdDevChange < -0.3) {
+      // Volatility contracting — favor mean reversion
+      quantScore += 1;
+    }
+  }
+
+  quantScore = Math.min(quantScore, 15);
+
+  // ════════════════════════════════════════════════════════════
   // DIRECTIONAL DECISION — Weighted Layer Voting
   // ════════════════════════════════════════════════════════════
 
@@ -591,7 +641,7 @@ export function analyzeSymbol(
   }
 
   const layers: LayerVote[] = [
-    { name: "MTF",        direction: htf.direction, weight: 4, passed: htf.direction !== 0, score: mtfScore },
+    { name: "MTF",        direction: htf.direction, weight: 5, passed: htf.direction !== 0, score: mtfScore },
     { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || emaCrossed, score: trendScore },
     { name: "Zone",       direction: zone.inBuyZone ? 1 : zone.inSellZone ? -1 : 0, weight: 3, passed: zone.inBuyZone || zone.inSellZone, score: zoneScore },
     { name: "Exhaustion", direction: stochZone.direction, weight: 3, passed: stochZone.isBuyZone || stochZone.isSellZone, score: exhaustionScore },
@@ -600,6 +650,7 @@ export function analyzeSymbol(
     { name: "Pattern",    direction: patternDirection, weight: 1, passed: patternBonus > 2, score: patternBonus },
     { name: "SMC",        direction: smc.direction, weight: 2, passed: smcScore > 2, score: smcScore },
     { name: "Slope",      direction: slopeDirection, weight: 1, passed: slopeScore > 1, score: slopeScore },
+    { name: "Quant",      direction: quantDirection, weight: 3, passed: quantScore > 3, score: quantScore },
   ];
 
   let buyWeight = 0, sellWeight = 0, buyCount = 0, sellCount = 0;
