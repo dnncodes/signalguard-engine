@@ -1138,7 +1138,7 @@ export function useTradeHistory() {
     setLoading(true);
     try {
       const [tradeData, backtestData] = await Promise.all([
-        api.fetchTradeHistory(100),
+        api.fetchTradeHistory(200),
         api.fetchBacktestSessions(20),
       ]);
       setTrades(tradeData);
@@ -1151,6 +1151,25 @@ export function useTradeHistory() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Realtime subscription for trade_logs — live updates
+  useEffect(() => {
+    const channel = supabase
+      .channel("trade-history-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) => [payload.new, ...prev]);
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) =>
+          prev.map((t) => (t.id === payload.new.id ? payload.new : t))
+        );
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) => prev.filter((t) => t.id !== payload.old.id));
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   return { trades, backtests, loading, reload: load };
 }
