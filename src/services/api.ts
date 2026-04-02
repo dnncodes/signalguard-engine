@@ -207,6 +207,8 @@ export async function executeTestTrade(params: {
     "m"
   );
 
+  const safeAmount = normalizeAmount(params.amount);
+
   const result = await callEdgeFunction<{
     success: boolean;
     contract_id: number;
@@ -218,7 +220,7 @@ export async function executeTestTrade(params: {
     method: "POST",
     body: {
       symbol: params.symbol,
-      amount: params.amount,
+      amount: safeAmount,
       contract_type: contractType,
       duration: actualDuration,
       duration_unit: actualUnit,
