@@ -1,8 +1,12 @@
 /**
- * Signal Analysis Engine v5.0 — "Smart Money + Multi-Timeframe" Edition
+ * Signal Analysis Engine v5.2 — "Quant Math + Smart Money + MTF" Edition
  *
- * KEY IMPROVEMENTS OVER v4.0:
- * ─ Multi-Timeframe Confluence: 5-min candle trend must confirm 1-min signal
+ * KEY IMPROVEMENTS OVER v5.1:
+ * ─ Layer 8: QUANT MATH — Standard Deviation, Linear Regression R², Z-Score
+ * ─ 15-min HTF default (institutional standard for noise filtering)
+ * ─ EMA(50) as primary trend filter
+ * ─ Amount normalization to 2 decimal places throughout
+ * ─ Multi-Timeframe Confluence: 5-min + 15-min candle trend confirms 1-min
  * ─ Fixed Stochastic: K>80 = OVERBOUGHT regardless of crossover
  * ─ Hard Directional Gates: Zone extreme + Stoch extreme = HARD LOCK direction
  * ─ Smart Money: Fair Value Gap + Break of Structure detection
@@ -33,6 +37,9 @@ import {
   calculateEMAGap,
   calculateBollingerBands,
   calculateStochastic,
+  calculateStdDev,
+  calculateLinearRegression,
+  calculateZScore,
 } from "./indicators";
 import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPattern } from "./patterns";
 
@@ -79,8 +86,16 @@ export interface SignalCandidate {
     layers_passed: number;
     expectancy: number;
     htf_trend_5m: number;
+    htf_trend_15m: number;
     mtf_aligned: boolean;
     smc_signal: string | null;
+    // v5.2 Quant Math
+    std_dev: number;
+    lin_reg_slope: number;
+    lin_reg_r2: number;
+    lin_reg_deviation: number;
+    z_score: number;
+    quant_score: number;
   };
 }
 
@@ -118,26 +133,62 @@ function buildCandles(prices: number[], times: number[], intervalSec: number): C
 }
 
 // ─── Multi-Timeframe Trend ───────────────────────────────────
-// Compute higher timeframe trend from 5-min candles
+// Compute higher timeframe trend from 5-min AND 15-min candles (institutional standard)
 
-function computeHTFTrend(prices: number[], times: number[]): { direction: number; strength: number } {
-  if (!times || times.length < 100) return { direction: 0, strength: 0 };
+interface HTFResult {
+  direction: number;
+  strength: number;
+  htf5m: { direction: number; strength: number };
+  htf15m: { direction: number; strength: number };
+}
 
-  const candles5m = buildCandles(prices, times, 300); // 5-min candles
-  if (candles5m.length < 9) return { direction: 0, strength: 0 };
+function computeHTFTrend(prices: number[], times: number[]): HTFResult {
+  const result: HTFResult = { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
+  if (!times || times.length < 100) return result;
 
-  const closes = candles5m.map(c => c.close);
-  const ema9 = calculateEMA(closes, Math.min(9, closes.length - 1));
-  const ema21 = closes.length >= 21
-    ? calculateEMA(closes, 21)
-    : calculateEMA(closes, Math.min(closes.length - 1, 5));
+  // 5-min candles
+  const candles5m = buildCandles(prices, times, 300);
+  if (candles5m.length >= 9) {
+    const closes = candles5m.map(c => c.close);
+    const ema9 = calculateEMA(closes, Math.min(9, closes.length - 1));
+    const ema21 = closes.length >= 21
+      ? calculateEMA(closes, 21)
+      : calculateEMA(closes, Math.min(closes.length - 1, 5));
+    const last = closes.length - 1;
+    const emaDiff = ema9[last] - ema21[last];
+    result.htf5m = {
+      direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+    };
+  }
 
-  const last = closes.length - 1;
-  const emaDiff = ema9[last] - ema21[last];
-  const direction = emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0;
-  const strength = closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0;
+  // 15-min candles (institutional noise filter)
+  const candles15m = buildCandles(prices, times, 900);
+  if (candles15m.length >= 5) {
+    const closes = candles15m.map(c => c.close);
+    const period = Math.min(9, closes.length - 1);
+    const ema = calculateEMA(closes, period);
+    const ema50 = closes.length >= 50
+      ? calculateEMA(closes, 50)
+      : calculateEMA(closes, Math.min(closes.length - 1, period));
+    const last = closes.length - 1;
+    const emaDiff = ema[last] - ema50[last];
+    result.htf15m = {
+      direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+    };
+  }
 
-  return { direction, strength };
+  // Combined: 15m takes priority (institutional), 5m confirms
+  if (result.htf15m.direction !== 0) {
+    result.direction = result.htf15m.direction;
+    result.strength = result.htf15m.strength + (result.htf5m.direction === result.htf15m.direction ? result.htf5m.strength * 0.5 : 0);
+  } else {
+    result.direction = result.htf5m.direction;
+    result.strength = result.htf5m.strength;
+  }
+
+  return result;
 }
 
 // ─── Volatility State Detection ──────────────────────────────
@@ -353,6 +404,7 @@ export function analyzeSymbol(
   // ── Compute all 1-min indicators ──
   const ema9 = calculateEMA(prices, 9);
   const ema21 = calculateEMA(prices, 21);
+  const ema50 = calculateEMA(prices, Math.min(50, prices.length - 1));
   const rsi = calculateRSI(prices, 14);
   const { histogram } = calculateMACD(prices);
   const atr = calculateATR(prices, 14);
@@ -360,6 +412,10 @@ export function analyzeSymbol(
   const emaGap = calculateEMAGap(ema9, ema21, prices);
   const bb = calculateBollingerBands(prices, 20, 2);
   const stoch = calculateStochastic(prices, 14, 3);
+  // v5.2: Quant Math indicators
+  const stdDev = calculateStdDev(prices, 20);
+  const linReg = calculateLinearRegression(prices, 20);
+  const zScore = calculateZScore(prices, 20);
 
   const last = prices.length - 1;
   const currentPrice = prices[last];
@@ -371,6 +427,12 @@ export function analyzeSymbol(
   const currentEMAGap = emaGap[last];
   const currentPercentB = bb.percentB[last];
   const currentBandwidth = bb.bandwidth[last];
+  // v5.2: Quant values
+  const currentStdDev = stdDev[last];
+  const currentLinRegSlope = linReg.slope[last];
+  const currentR2 = linReg.r2[last];
+  const currentLinRegDev = linReg.deviation[last];
+  const currentZScore = zScore[last];
 
   // ════════════════════════════════════════════════════════════
   // LAYER 0: NOISE GATE — Volatility Filter
@@ -384,7 +446,7 @@ export function analyzeSymbol(
   // v5.1 FIX: Compute mtfScore immediately (was always 0 before!)
   // ════════════════════════════════════════════════════════════
 
-  const htf = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0 };
+  const htf: HTFResult = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
   let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * 1.5, 15) : 0;
 
   // ════════════════════════════════════════════════════════════
@@ -525,6 +587,56 @@ export function analyzeSymbol(
   const slopeDirection = currentSlope > 0 ? 1 : currentSlope < 0 ? -1 : 0;
 
   // ════════════════════════════════════════════════════════════
+  // LAYER 8: QUANT MATH — Standard Deviation, Linear Regression, Z-Score (v5.2)
+  // ════════════════════════════════════════════════════════════
+
+  let quantScore = 0;
+  let quantDirection = 0;
+
+  // Linear Regression: R² > 0.7 means strong trend, slope gives direction
+  if (currentR2 > 0.7) {
+    // Strong linear trend — trust it
+    quantDirection = currentLinRegSlope > 0 ? 1 : currentLinRegSlope < 0 ? -1 : 0;
+    quantScore += Math.min(currentR2 * 10, 8); // max 8 from R²
+  } else if (currentR2 < 0.3) {
+    // Weak trend (choppy) — penalty applied via noise gate
+    quantScore += 0;
+  }
+
+  // Z-Score: extreme values indicate mean-reversion opportunity
+  if (Math.abs(currentZScore) > 2.0) {
+    // Price >2 std devs from mean → mean-reversion signal
+    const zDir = currentZScore > 0 ? -1 : 1; // Sell if above mean, Buy if below
+    if (quantDirection === 0) quantDirection = zDir;
+    else if (quantDirection === zDir) quantScore += 5; // Reinforces
+    else quantScore -= 3; // Conflicts
+  }
+
+  // Regression deviation: if price is far from regression line in trend direction
+  if (currentPrice > 0) {
+    const devPct = Math.abs(currentLinRegDev) / currentPrice * 100;
+    if (devPct > 0.05 && currentR2 > 0.5) {
+      // Price deviating from strong trend line — possible snapback
+      const devDir = currentLinRegDev > 0 ? -1 : 1; // Above line → sell bias, below → buy bias
+      if (devDir === quantDirection) quantScore += 3;
+    }
+  }
+
+  // Std Dev rate of change: increasing vol = breakout, decreasing = consolidation
+  if (last >= 5 && stdDev[last - 5] > 0) {
+    const stdDevChange = (currentStdDev - stdDev[last - 5]) / stdDev[last - 5];
+    if (stdDevChange > 0.3) {
+      // Volatility expanding — favor trend continuation
+      quantScore += 2;
+    } else if (stdDevChange < -0.3) {
+      // Volatility contracting — favor mean reversion
+      quantScore += 1;
+    }
+  }
+
+  quantScore = Math.min(quantScore, 15);
+
+  // ════════════════════════════════════════════════════════════
   // DIRECTIONAL DECISION — Weighted Layer Voting
   // ════════════════════════════════════════════════════════════
 
@@ -537,7 +649,7 @@ export function analyzeSymbol(
   }
 
   const layers: LayerVote[] = [
-    { name: "MTF",        direction: htf.direction, weight: 4, passed: htf.direction !== 0, score: mtfScore },
+    { name: "MTF",        direction: htf.direction, weight: 5, passed: htf.direction !== 0, score: mtfScore },
     { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || emaCrossed, score: trendScore },
     { name: "Zone",       direction: zone.inBuyZone ? 1 : zone.inSellZone ? -1 : 0, weight: 3, passed: zone.inBuyZone || zone.inSellZone, score: zoneScore },
     { name: "Exhaustion", direction: stochZone.direction, weight: 3, passed: stochZone.isBuyZone || stochZone.isSellZone, score: exhaustionScore },
@@ -546,6 +658,7 @@ export function analyzeSymbol(
     { name: "Pattern",    direction: patternDirection, weight: 1, passed: patternBonus > 2, score: patternBonus },
     { name: "SMC",        direction: smc.direction, weight: 2, passed: smcScore > 2, score: smcScore },
     { name: "Slope",      direction: slopeDirection, weight: 1, passed: slopeScore > 1, score: slopeScore },
+    { name: "Quant",      direction: quantDirection, weight: 3, passed: quantScore > 3, score: quantScore },
   ];
 
   let buyWeight = 0, sellWeight = 0, buyCount = 0, sellCount = 0;
@@ -587,7 +700,7 @@ export function analyzeSymbol(
       type = "SELL";
       conflictPenalty += 15;
       hardGateApplied = true;
-      console.log(`[v5.0] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced SELL`);
+      console.log(`[v5.2] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced SELL`);
     }
   }
 
@@ -597,7 +710,7 @@ export function analyzeSymbol(
       type = "BUY";
       conflictPenalty += 15;
       hardGateApplied = true;
-      console.log(`[v5.0] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced BUY`);
+      console.log(`[v5.2] HARD GATE: Zone(${zone.position}) + Stoch(K:${stoch.k[last].toFixed(0)}) → forced BUY`);
     }
   }
 
@@ -635,13 +748,19 @@ export function analyzeSymbol(
     if (macdDirection !== trendDir) conflictPenalty += 5;
   }
 
-  // MTF disagreement penalty (v5.0)
+  // MTF disagreement penalty (v5.2: 15m takes priority)
   const mtfAligned = htf.direction === 0 || (type === "BUY" ? htf.direction > 0 : htf.direction < 0);
   if (htf.direction !== 0 && !mtfAligned) {
-    conflictPenalty += 12; // Significant penalty for trading against higher timeframe
-    console.log(`[v5.0] MTF CONFLICT: 5min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type}`);
+    conflictPenalty += 15; // Heavier penalty for 15m disagreement
+    console.log(`[v5.2] MTF CONFLICT: 15min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type}`);
   } else if (mtfAligned && htf.direction !== 0) {
     mtfScore = 15; // Bonus for MTF alignment
+  }
+
+  // Quant conflict: R² strong but direction disagrees
+  if (currentR2 > 0.7 && quantDirection !== 0) {
+    const signalDir = type === "BUY" ? 1 : -1;
+    if (quantDirection !== signalDir) conflictPenalty += 7;
   }
 
   // Noise penalties
@@ -649,11 +768,11 @@ export function analyzeSymbol(
   if (rsiIsChoppy) conflictPenalty += 8;
 
   // ════════════════════════════════════════════════════════════
-  // COMPOSITE SCORE (v5.0 — linear additive, no multiplicative dilution)
+  // COMPOSITE SCORE (v5.2 — linear additive with quant layer)
   // ════════════════════════════════════════════════════════════
 
   const rawScore = mtfScore + trendScore + zoneScore + exhaustionScore +
-    momentumScore + rsiScore + patternBonus + smcScore + slopeScore;
+    momentumScore + rsiScore + patternBonus + smcScore + slopeScore + quantScore;
 
   const penalizedScore = Math.max(rawScore - conflictPenalty, 0);
 
@@ -696,18 +815,22 @@ export function analyzeSymbol(
   if (currentPercentB <= 0.10 || currentPercentB >= 0.90) patterns.push("BB EXTREME");
   if (smc.description) patterns.push(`SMC: ${smc.description}`);
   if (hardGateApplied) patterns.push("HARD GATE APPLIED");
+  if (currentR2 > 0.7) patterns.push(`LINREG R²:${(currentR2 * 100).toFixed(0)}%`);
+  if (Math.abs(currentZScore) > 2.0) patterns.push(`ZSCORE:${currentZScore.toFixed(1)}`);
   const pattern = patterns.length > 0 ? patterns.join(" + ") : null;
 
   // Logic summary
   const logicParts: string[] = [];
   logicParts.push(`Grade:${grade}`);
   if (htf.direction !== 0) logicParts.push(`MTF:${htf.direction > 0 ? "↑" : "↓"}(${mtfAligned ? "✓" : "✗"})`);
+  if (htf.htf15m.direction !== 0) logicParts.push(`15m:${htf.htf15m.direction > 0 ? "↑" : "↓"}`);
   if (trendConfirmed) logicParts.push(`Trend:${trendUp ? "↑" : "↓"}`);
   else logicParts.push("Trend:⚠️");
   logicParts.push(`Zone:${zone.position}`);
   logicParts.push(`RSI:${currentRSI.toFixed(0)}`);
   logicParts.push(`Stoch:${stoch.k[last].toFixed(0)}(${stochZone.signal})`);
   logicParts.push(`${layersPassed}/${layers.length} layers`);
+  if (currentR2 > 0.5) logicParts.push(`R²:${(currentR2 * 100).toFixed(0)}%`);
   if (isNoisyMarket) logicParts.push(`Vol:${volState}`);
   if (smc.description) logicParts.push(`SMC:${smc.description}`);
   logicParts.push(expectancy > 0 ? `E+:${(expectancy * 100).toFixed(1)}%` : `E-:${(expectancy * 100).toFixed(1)}%`);
@@ -763,14 +886,22 @@ export function analyzeSymbol(
       volatility_state: volState,
       layers_passed: layersPassed,
       expectancy,
-      htf_trend_5m: htf.direction,
+      htf_trend_5m: htf.htf5m.direction,
+      htf_trend_15m: htf.htf15m.direction,
       mtf_aligned: mtfAligned,
       smc_signal: smc.description,
+      // v5.2 Quant Math metrics
+      std_dev: currentStdDev,
+      lin_reg_slope: currentLinRegSlope,
+      lin_reg_r2: currentR2,
+      lin_reg_deviation: currentLinRegDev,
+      z_score: currentZScore,
+      quant_score: quantScore,
     },
   };
 }
 
-// ─── Signal Generator (v5.0) ────────────────────────────────
+// ─── Signal Generator (v5.2) ────────────────────────────────
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
@@ -834,7 +965,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.1] No symbols with sufficient data this cycle");
+      console.log("[v5.2] No symbols with sufficient data this cycle");
       return null;
     }
 
@@ -854,7 +985,7 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.1] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `[v5.2] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
         `Min grade required: ${minGrade} | Consecutive losses: ${this.consecutiveLosses} — SKIPPING CYCLE`
       );
       return null;
@@ -877,7 +1008,7 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.1] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
+      `[v5.2] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
@@ -914,17 +1045,17 @@ export class SignalGenerator {
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
       this.worker.postMessage({ type: "start", interval: intervalMs });
-      console.log(`[v5.1] Signal Engine Started — Web Worker timer (background-safe)`);
+      console.log(`[v5.2] Signal Engine Started — Web Worker timer (background-safe)`);
     } catch (err) {
       // Fallback to regular interval if Workers unavailable
-      console.warn("[v5.1] Web Worker unavailable, using setInterval (will throttle in background):", err);
+      console.warn("[v5.2] Web Worker unavailable, using setInterval (will throttle in background):", err);
       this.intervalId = setInterval(() => this.tick(), intervalMs);
-      console.log(`[v5.1] Signal Engine Started — setInterval fallback`);
+      console.log(`[v5.2] Signal Engine Started — setInterval fallback`);
     }
 
-    console.log(`[v5.1] Layers: MTF → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope`);
-    console.log(`[v5.1] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Loss Streak`);
-    console.log(`[v5.1] Emission: A/B grades only (C-grade suppressed)`);
+    console.log(`[v5.2] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant(StdDev+LinReg+Z)`);
+    console.log(`[v5.2] Filters: Hard Gates + Noise Gate + RSI Chop + MTF(15m) Conflict + Quant R² + Loss Streak`);
+    console.log(`[v5.2] Emission: A/B grades only (C-grade suppressed) | Default: 15m TF + EMA(50)`);
   }
 
   stop() {
@@ -938,7 +1069,7 @@ export class SignalGenerator {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    console.log(`[v5.1] Signal Engine Stopped`);
+    console.log(`[v5.2] Signal Engine Stopped`);
   }
 
   private async tick() {
@@ -947,7 +1078,7 @@ export class SignalGenerator {
       const now = Date.now();
       const elapsed = now - this.lastSignalTime;
       if (elapsed < this.MIN_INTERVAL_MS) {
-        console.log(`[v5.1] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
+        console.log(`[v5.2] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
         return;
       }
 
@@ -957,7 +1088,7 @@ export class SignalGenerator {
         this.callbacks.forEach((cb) => cb(signal));
       }
     } catch (err) {
-      console.error("[v5.1] Tick error:", err);
+      console.error("[v5.2] Tick error:", err);
     }
   }
 

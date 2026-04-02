@@ -95,7 +95,7 @@ export function useSignals() {
   const [error, setError] = useState<string | null>(null);
   const [engineRunning, setEngineRunning] = useState(globalGeneratorInstance?.isRunning() ?? false);
   const [timeframe, setTimeframe] = useState(15);
-  const [emaPeriod, setEmaPeriod] = useState(21);
+  const [emaPeriod, setEmaPeriod] = useState(50);
   const [trendDirections, setTrendDirections] = useState<Map<string, "up" | "down" | "neutral">>(new Map());
   const priceHistoryRef = useRef<Map<string, { price: number; time: number }[]>>(new Map());
   const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection();
@@ -147,7 +147,7 @@ export function useSignals() {
 
       generator.start(5 * 60 * 1000);
       setEngineRunning(true);
-      console.log("[v5.0] Signal Engine auto-started");
+      console.log("[v5.2] Signal Engine auto-started");
     } else {
       setEngineRunning(globalGeneratorInstance.isRunning());
     }
@@ -155,7 +155,7 @@ export function useSignals() {
     return () => { globalGeneratorRefCount--; };
   }, [wsStatus]);
 
-  // Engine start/stop controls
+  // Engine start/stop controls — also controls WebSocket connection
   const toggleEngine = useCallback(() => {
     if (!globalGeneratorInstance) {
       const generator = new SignalGenerator(Object.keys(SYMBOLS));
@@ -172,12 +172,18 @@ export function useSignals() {
     }
     if (globalGeneratorInstance.isRunning()) {
       globalGeneratorInstance.stop();
+      // Disconnect WebSocket when engine is off
+      derivWs.disconnect();
       setEngineRunning(false);
-      toast.info("🔴 Signal Engine stopped");
+      toast.info("🔴 Signal Engine stopped — WebSocket disconnected");
     } else {
+      // Reconnect WebSocket when engine starts
+      derivWs.connect();
+      const symbolKeys = Object.keys(SYMBOLS);
+      symbolKeys.forEach((s) => derivWs.subscribeTicks(s));
       globalGeneratorInstance.start(5 * 60 * 1000);
       setEngineRunning(true);
-      toast.success("🟢 Signal Engine started");
+      toast.success("🟢 Signal Engine started — WebSocket connected");
     }
   }, []);
 
@@ -441,7 +447,7 @@ export function useBacktest() {
           (best.type === "BUY" && best.exitPrice > best.entryPrice) ||
           (best.type === "SELL" && best.exitPrice < best.entryPrice);
 
-        const currentTradeAmount = tradeAmount;
+        const currentTradeAmount = Math.floor(tradeAmount * 100) / 100;
         const payout = currentTradeAmount * 0.85;
 
         const tradePlacedAtLevel = martingaleLevel;
@@ -466,7 +472,7 @@ export function useBacktest() {
           if (martingaleLevel >= config.maxMartingaleLevel) {
             stopReason = "martingale";
           } else {
-            tradeAmount = currentTradeAmount * config.martingaleMultiplier;
+            tradeAmount = Math.floor(currentTradeAmount * config.martingaleMultiplier * 100) / 100;
           }
         }
 
@@ -817,7 +823,7 @@ export function useLiveAutomation() {
       return;
     }
 
-    const tradeAmount = Math.max(globalAuto.martingale.nextAmount, 0.35);
+    const tradeAmount = Math.max(Math.floor(globalAuto.martingale.nextAmount * 100) / 100, 0.35);
     const contractType = signal.type === "BUY" ? "CALL" : "PUT";
 
     globalAuto.tradeLocked = true;
@@ -1132,7 +1138,7 @@ export function useTradeHistory() {
     setLoading(true);
     try {
       const [tradeData, backtestData] = await Promise.all([
-        api.fetchTradeHistory(100),
+        api.fetchTradeHistory(200),
         api.fetchBacktestSessions(20),
       ]);
       setTrades(tradeData);
@@ -1145,6 +1151,25 @@ export function useTradeHistory() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Realtime subscription for trade_logs — live updates
+  useEffect(() => {
+    const channel = supabase
+      .channel("trade-history-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) => [payload.new, ...prev]);
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) =>
+          prev.map((t) => (t.id === payload.new.id ? payload.new : t))
+        );
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "trade_logs" }, (payload) => {
+        setTrades((prev) => prev.filter((t) => t.id !== payload.old.id));
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   return { trades, backtests, loading, reload: load };
 }

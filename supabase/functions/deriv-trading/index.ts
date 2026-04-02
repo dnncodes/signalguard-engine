@@ -252,7 +252,7 @@ function formatSignalTelegram(body: any): string {
     `💡 <b>Logic:</b> ${logic || details || "—"}`,
     ``,
     `📌 <i>5-min scalping | Best of ${Object.keys(SYMBOL_NAMES).length} markets</i>`,
-    `🤖 <i>DNN Deriv Engine v5.0 SMC+MTF</i>`
+    `🤖 <i>DNN Deriv Engine v5.2 QUANT+SMC+MTF</i>`
   );
 
   return lines.join("\n");
@@ -513,7 +513,9 @@ serve(async (req: Request) => {
         if (!symbol || !amount || !contract_type) {
           return errorResponse("Missing: symbol, amount, contract_type", 400);
         }
-        if (amount < 0.35) {
+        // Normalize amount to 2 decimal places (Deriv rejects >2dp)
+        const safeAmount = Math.floor(Number(amount) * 100) / 100;
+        if (safeAmount < 0.35) {
           return errorResponse("Minimum trade amount is $0.35", 400);
         }
 
@@ -529,7 +531,7 @@ serve(async (req: Request) => {
 
         const proposalRes = await derivRequest(ws, {
           proposal: 1,
-          amount,
+          amount: safeAmount,
           basis: "stake",
           contract_type,
           currency: acct.currency,

@@ -96,6 +96,40 @@ export default function TradeHistory() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
+        {/* Summary Stats Bar */}
+        {!loading && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <StatCard
+              label="Total Trades"
+              value={String(trades.length)}
+              icon={<BarChart3 size={14} className="text-[hsl(var(--status-info))]" />}
+            />
+            <StatCard
+              label="Win Rate"
+              value={(() => {
+                const settled = trades.filter((t) => t.result === "WIN" || t.result === "LOSS");
+                const wins = settled.filter((t) => t.result === "WIN").length;
+                return settled.length > 0 ? `${((wins / settled.length) * 100).toFixed(1)}%` : "—";
+              })()}
+              icon={<TrendingUp size={14} className="text-[hsl(var(--signal-buy))]" />}
+            />
+            <StatCard
+              label="Net P&L"
+              value={(() => {
+                const pnl = trades.reduce((sum, t) => sum + (t.profit || 0), 0);
+                return `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+              })()}
+              icon={<DollarSign size={14} className="text-[hsl(var(--signal-buy))]" />}
+              positive={trades.reduce((sum, t) => sum + (t.profit || 0), 0) >= 0}
+            />
+            <StatCard
+              label="Sessions"
+              value={String(backtests.length)}
+              icon={<Clock size={14} className="text-[hsl(var(--engine-text-muted))]" />}
+            />
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="flex gap-1 mb-8 p-1 bg-[hsl(var(--engine-surface))] rounded-lg w-fit border border-[hsl(var(--engine-border))]">
           <TabButton active={tab === "live"} onClick={() => setTab("live")} icon={<DollarSign size={12} />} label={`Automated (${liveTrades.length})`} />
@@ -118,7 +152,7 @@ export default function TradeHistory() {
             deletingIds={deletingIds}
           />
         ) : tab === "manual" ? (
-          <TradesTable
+          <SessionGroupedTrades
             trades={manualTrades}
             title="Manual Trades"
             icon={<Wrench size={16} className="text-[hsl(var(--status-info))]" />}
@@ -130,6 +164,22 @@ export default function TradeHistory() {
           <BacktestsTable backtests={backtests} onDelete={handleDeleteBacktest} deletingIds={deletingIds} />
         )}
       </main>
+    </div>
+  );
+}
+
+// ─── Stat Card ───────────────────────────────────────────────
+
+function StatCard({ label, value, icon, positive }: { label: string; value: string; icon: React.ReactNode; positive?: boolean }) {
+  return (
+    <div className="engine-panel rounded-lg p-4 flex items-center gap-3">
+      <div className="w-8 h-8 rounded-md bg-[hsl(var(--engine-surface))] flex items-center justify-center">{icon}</div>
+      <div>
+        <p className="text-[8px] text-[hsl(var(--engine-text-dim))] font-mono font-bold uppercase tracking-widest">{label}</p>
+        <p className={`text-sm font-black font-mono ${positive === true ? "text-[hsl(var(--signal-buy))]" : positive === false ? "text-[hsl(var(--signal-sell))]" : "text-[hsl(var(--engine-text-primary))]"}`}>
+          {value}
+        </p>
+      </div>
     </div>
   );
 }

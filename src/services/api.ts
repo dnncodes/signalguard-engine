@@ -9,6 +9,10 @@ import {
 } from "@/types/engine";
 import type { SignalCandidate } from "./signalEngine";
 
+// ─── Amount Normalization (Deriv requires max 2 decimal places) ──
+export function normalizeAmount(amount: number): number {
+  return Math.floor(amount * 100) / 100;
+}
 // ─── Edge Function Caller ────────────────────────────────────
 
 async function callEdgeFunction<T>(
@@ -149,11 +153,14 @@ export async function executeTrade(params: {
     params.durationUnit
   );
 
+  // Normalize amount to 2 decimal places (Deriv rejects > 2dp)
+  const safeAmount = normalizeAmount(params.amount);
+
   return callEdgeFunction("buy", {
     method: "POST",
     body: {
       symbol: params.symbol,
-      amount: params.amount,
+      amount: safeAmount,
       contract_type: params.contractType,
       duration: actualDuration,
       duration_unit: actualUnit,
@@ -200,6 +207,8 @@ export async function executeTestTrade(params: {
     "m"
   );
 
+  const safeAmount = normalizeAmount(params.amount);
+
   const result = await callEdgeFunction<{
     success: boolean;
     contract_id: number;
@@ -211,7 +220,7 @@ export async function executeTestTrade(params: {
     method: "POST",
     body: {
       symbol: params.symbol,
-      amount: params.amount,
+      amount: safeAmount,
       contract_type: contractType,
       duration: actualDuration,
       duration_unit: actualUnit,
