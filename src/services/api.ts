@@ -9,6 +9,10 @@ import {
 } from "@/types/engine";
 import type { SignalCandidate } from "./signalEngine";
 
+// ─── Amount Normalization (Deriv requires max 2 decimal places) ──
+export function normalizeAmount(amount: number): number {
+  return Math.floor(amount * 100) / 100;
+}
 // ─── Edge Function Caller ────────────────────────────────────
 
 async function callEdgeFunction<T>(
