@@ -13,7 +13,6 @@ import {
   ApiError,
   SYMBOLS,
   TRADE_DURATION_LIVE,
-  TRADE_DURATION_BACKTEST,
 } from "@/types/engine";
 import * as api from "@/services/api";
 import { derivWs, type TickData, type ConnectionStatus } from "@/services/derivWebSocket";
@@ -44,15 +43,22 @@ function handleApiError(err: unknown, context: string): string {
   return msg;
 }
 
+const MIN_STAKE = 0.35;
+
+function normalizeStake(amount: number): number {
+  return Math.max(api.normalizeAmount(amount), MIN_STAKE);
+}
+
 // ─── useDerivConnection ─────────────────────────────────────
 
-export function useDerivConnection() {
+export function useDerivConnection(enabled = true) {
   const [status, setStatus] = useState<ConnectionStatus>(derivWs.getStatus());
   const [latestTicks, setLatestTicks] = useState<Map<string, TickData>>(new Map());
   const [prevTicks, setPrevTicks] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
-    derivWs.connect();
+    if (!enabled) return;
+    void derivWs.connect();
     const unsubStatus = derivWs.onStatusChange(setStatus);
     const unsubTick = derivWs.onTick((tick) => {
       setLatestTicks((prev) => {
@@ -73,7 +79,7 @@ export function useDerivConnection() {
       console.error("[DerivWS]", error);
     });
     return () => { unsubStatus(); unsubTick(); unsubError(); };
-  }, []);
+  }, [enabled]);
 
   const subscribeTo = useCallback((symbols: string[]) => {
     symbols.forEach((s) => derivWs.subscribeTicks(s));
@@ -86,7 +92,34 @@ export function useDerivConnection() {
 // Signal generator runs as a SINGLETON — survives page navigation.
 
 let globalGeneratorInstance: SignalGenerator | null = null;
-let globalGeneratorRefCount = 0;
+
+function getOrCreateSignalGenerator() {
+  if (globalGeneratorInstance) return globalGeneratorInstance;
+
+  const generator = new SignalGenerator(Object.keys(SYMBOLS));
+  generator.onSignal(async (candidate: SignalCandidate) => {
+    try {
+      await api.insertSignal({
+        symbol: candidate.symbol,
+        type: candidate.type,
+        price: candidate.price,
+        details: candidate.details,
+        score: candidate.score,
+        metrics: candidate.metrics as any,
+      });
+      try {
+        await api.sendTelegramSignal(candidate);
+      } catch (tgErr) {
+        console.warn("[Telegram] Failed:", tgErr);
+      }
+    } catch (err) {
+      console.error("[SignalEngine] Save failed:", err);
+    }
+  });
+
+  globalGeneratorInstance = generator;
+  return generator;
+}
 
 export function useSignals() {
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -98,7 +131,7 @@ export function useSignals() {
   const [emaPeriod, setEmaPeriod] = useState(50);
   const [trendDirections, setTrendDirections] = useState<Map<string, "up" | "down" | "neutral">>(new Map());
   const priceHistoryRef = useRef<Map<string, { price: number; time: number }[]>>(new Map());
-  const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection();
+  const { wsStatus, latestTicks, prevTicks, subscribeTo } = useDerivConnection(engineRunning);
 
   // Initial load
   useEffect(() => {
@@ -111,10 +144,6 @@ export function useSignals() {
         setSignals(sigData);
         setMarketStatus(statusData);
         setError(null);
-
-        // Subscribe to all symbols
-        const symbolKeys = Object.keys(SYMBOLS);
-        subscribeTo(symbolKeys);
       } catch (err) {
         setError(handleApiError(err, "Initial data load failed"));
       } finally {
@@ -124,64 +153,23 @@ export function useSignals() {
     loadInitial();
   }, [subscribeTo]);
 
-  // Initialize signal generator as singleton
   useEffect(() => {
-    if (wsStatus !== "connected") return;
-    globalGeneratorRefCount++;
-
-    if (!globalGeneratorInstance) {
-      const generator = new SignalGenerator(Object.keys(SYMBOLS));
-      globalGeneratorInstance = generator;
-
-      generator.onSignal(async (candidate: SignalCandidate) => {
-        try {
-          await api.insertSignal({
-            symbol: candidate.symbol, type: candidate.type, price: candidate.price,
-            details: candidate.details, score: candidate.score, metrics: candidate.metrics as any,
-          });
-          try { await api.sendTelegramSignal(candidate); } catch (tgErr) {
-            console.warn("[Telegram] Failed:", tgErr);
-          }
-        } catch (err) { console.error("[SignalEngine] Save failed:", err); }
-      });
-
-      generator.start(5 * 60 * 1000);
-      setEngineRunning(true);
-      console.log("[v5.2] Signal Engine auto-started");
-    } else {
-      setEngineRunning(globalGeneratorInstance.isRunning());
-    }
-
-    return () => { globalGeneratorRefCount--; };
-  }, [wsStatus]);
+    if (!engineRunning || wsStatus !== "connected") return;
+    subscribeTo(Object.keys(SYMBOLS));
+  }, [engineRunning, subscribeTo, wsStatus]);
 
   // Engine start/stop controls — also controls WebSocket connection
   const toggleEngine = useCallback(() => {
-    if (!globalGeneratorInstance) {
-      const generator = new SignalGenerator(Object.keys(SYMBOLS));
-      globalGeneratorInstance = generator;
-      generator.onSignal(async (candidate: SignalCandidate) => {
-        try {
-          await api.insertSignal({
-            symbol: candidate.symbol, type: candidate.type, price: candidate.price,
-            details: candidate.details, score: candidate.score, metrics: candidate.metrics as any,
-          });
-          try { await api.sendTelegramSignal(candidate); } catch {}
-        } catch (err) { console.error("[SignalEngine] Save failed:", err); }
-      });
-    }
-    if (globalGeneratorInstance.isRunning()) {
-      globalGeneratorInstance.stop();
+    const generator = getOrCreateSignalGenerator();
+
+    if (generator.isRunning()) {
+      generator.stop();
       // Disconnect WebSocket when engine is off
       derivWs.disconnect();
       setEngineRunning(false);
       toast.info("🔴 Signal Engine stopped — WebSocket disconnected");
     } else {
-      // Reconnect WebSocket when engine starts
-      derivWs.connect();
-      const symbolKeys = Object.keys(SYMBOLS);
-      symbolKeys.forEach((s) => derivWs.subscribeTicks(s));
-      globalGeneratorInstance.start(5 * 60 * 1000);
+      generator.start(5 * 60 * 1000);
       setEngineRunning(true);
       toast.success("🟢 Signal Engine started — WebSocket connected");
     }
@@ -206,13 +194,18 @@ export function useSignals() {
       const lookbackMs = timeframe * 60 * 1000;
 
       for (const [symbol, history] of priceHistoryRef.current) {
-        if (history.length < 5) { newDirs.set(symbol, "neutral"); continue; }
+        const scopedHistory = history.filter((point) => point.time >= now - lookbackMs);
+        if (scopedHistory.length < 5) {
+          newDirs.set(symbol, "neutral");
+          continue;
+        }
 
-        const prices = history.map(h => h.price);
+        const prices = scopedHistory.map((point) => point.price);
 
-        // EMA-based trend: compare current price vs EMA(period)
-        if (prices.length >= emaPeriod) {
-          const emaValues = calculateEMA(prices, emaPeriod);
+        // EMA-based trend inside the selected timeframe window
+        const effectivePeriod = Math.min(emaPeriod, prices.length - 1);
+        if (effectivePeriod >= 1) {
+          const emaValues = calculateEMA(prices, effectivePeriod);
           const currentPrice = prices[prices.length - 1];
           const currentEMA = emaValues[emaValues.length - 1];
           if (currentEMA > 0) {
@@ -226,12 +219,8 @@ export function useSignals() {
         }
 
         // Fallback: simple price comparison over timeframe
-        const current = history[history.length - 1].price;
-        const targetTime = now - lookbackMs;
-        let pastPrice = history[0].price;
-        for (const h of history) {
-          if (h.time <= targetTime) pastPrice = h.price; else break;
-        }
+        const current = scopedHistory[scopedHistory.length - 1].price;
+        const pastPrice = scopedHistory[0].price;
         newDirs.set(symbol, current > pastPrice ? "up" : current < pastPrice ? "down" : "neutral");
       }
       setTrendDirections(newDirs);
@@ -358,8 +347,9 @@ export function useBacktest() {
       const firstData = symbolHistories.values().next().value!;
       const startTime = firstData.times[50];
       // BACKTEST uses 5-minute intervals always
-      const timeframeSeconds = TRADE_DURATION_BACKTEST * 60;
-      const expectedTrades = Math.floor(config.duration * 60 / TRADE_DURATION_BACKTEST);
+      const simulationTimeframe = Math.max(1, Math.round(config.timeframe));
+      const timeframeSeconds = simulationTimeframe * 60;
+      const expectedTrades = Math.floor(config.duration * 60 / simulationTimeframe);
 
       function findNearestIndex(times: number[], targetTime: number): number {
         let lo = 0, hi = times.length - 1;
@@ -379,7 +369,7 @@ export function useBacktest() {
       let grossLosses = 0;
       let maxDrawdown = 0;
       let peakBalance = balance;
-      let tradeAmount = config.initialTradeAmount;
+      let tradeAmount = api.normalizeAmount(config.initialTradeAmount);
       let martingaleLevel = 0;
       let stopReason: "profitTarget" | "martingale" | null = null;
 
@@ -420,7 +410,8 @@ export function useBacktest() {
           if (entryIdx < 50 || exitIdx >= data.prices.length || entryIdx >= exitIdx) continue;
 
           const windowPrices = data.prices.slice(0, entryIdx + 1);
-          const candidate = analyzeSymbol(windowPrices);
+          const windowTimes = data.times.slice(0, entryIdx + 1);
+          const candidate = analyzeSymbol(windowPrices, windowTimes);
 
           if (candidate) {
             candidates.push({
@@ -447,7 +438,7 @@ export function useBacktest() {
           (best.type === "BUY" && best.exitPrice > best.entryPrice) ||
           (best.type === "SELL" && best.exitPrice < best.entryPrice);
 
-        const currentTradeAmount = Math.floor(tradeAmount * 100) / 100;
+        const currentTradeAmount = api.normalizeAmount(tradeAmount);
         const payout = currentTradeAmount * 0.85;
 
         const tradePlacedAtLevel = martingaleLevel;
@@ -459,7 +450,7 @@ export function useBacktest() {
           const stats = symbolStats.get(best.symbol)!;
           stats.wins++;
           stats.grossWin += payout;
-          tradeAmount = config.initialTradeAmount;
+          tradeAmount = api.normalizeAmount(config.initialTradeAmount);
           martingaleLevel = 0;
         } else {
           balance -= currentTradeAmount;
@@ -472,7 +463,7 @@ export function useBacktest() {
           if (martingaleLevel >= config.maxMartingaleLevel) {
             stopReason = "martingale";
           } else {
-            tradeAmount = Math.floor(currentTradeAmount * config.martingaleMultiplier * 100) / 100;
+            tradeAmount = api.normalizeAmount(currentTradeAmount * config.martingaleMultiplier);
           }
         }
 
@@ -529,7 +520,7 @@ export function useBacktest() {
         duration: config.duration,
         timeframe: config.timeframe,
         initialBalance: config.initialBalance,
-        initialTradeAmount: config.initialTradeAmount,
+        initialTradeAmount: api.normalizeAmount(config.initialTradeAmount),
         martingaleMultiplier: config.martingaleMultiplier,
         maxMartingaleLevel: config.maxMartingaleLevel,
         stopReason,
@@ -566,7 +557,7 @@ export function useBacktest() {
           duration_hours: config.duration,
           timeframe_minutes: config.timeframe,
           initial_balance: config.initialBalance,
-          initial_trade_amount: config.initialTradeAmount,
+          initial_trade_amount: api.normalizeAmount(config.initialTradeAmount),
           martingale_multiplier: config.martingaleMultiplier,
           max_martingale_level: config.maxMartingaleLevel,
           profit_target: config.profitTarget,
@@ -617,6 +608,7 @@ interface AutomationGlobalState {
   signalQueue: SignalCandidate | null;
   settling: boolean;
   initialBalance: number | null;
+  currentBalance: number | null;
   accountType: "demo" | "live";
 }
 
@@ -631,6 +623,7 @@ const globalAuto: AutomationGlobalState = {
   signalQueue: null,
   settling: false,
   initialBalance: null,
+  currentBalance: null,
   accountType: "demo",
 };
 
@@ -656,10 +649,13 @@ export function useLiveAutomation() {
     setBalanceLoading(true);
     try {
       const data = await api.fetchBalance(acct);
-      setBalance(typeof data.balance === "number" ? data.balance : null);
+      const nextBalance = typeof data.balance === "number" ? data.balance : null;
+      globalAuto.currentBalance = nextBalance;
+      setBalance(nextBalance);
       setCurrency(data.currency || "USD");
-      return typeof data.balance === "number" ? data.balance : null;
+      return nextBalance;
     } catch {
+      globalAuto.currentBalance = null;
       setBalance(null);
       setCurrency("USD");
       return null;
@@ -689,12 +685,7 @@ export function useLiveAutomation() {
     const cfg = globalAuto.config;
     if (cfg.profitTarget <= 0) return false;
 
-    let currentBal: number | null = null;
-    setStatus((prev) => {
-      if (prev?.currentBalance != null) currentBal = prev.currentBalance;
-      return prev;
-    });
-
+    const currentBal = globalAuto.currentBalance;
     if (currentBal == null) return false;
 
     const profit = currentBal - globalAuto.initialBalance;
@@ -770,7 +761,7 @@ export function useLiveAutomation() {
                 return;
               }
               const nextAmount = info.amount * cfg.martingaleMultiplier;
-              globalAuto.martingale = { consecutiveLosses: newConsecutive, nextAmount };
+              globalAuto.martingale = { consecutiveLosses: newConsecutive, nextAmount: normalizeStake(nextAmount) };
               console.log(`[Martingale] LOSS #${newConsecutive} → next trade: $${nextAmount.toFixed(2)}`);
             }
 
@@ -796,6 +787,7 @@ export function useLiveAutomation() {
             }, 2000);
           }
 
+          globalAuto.currentBalance = settledBalanceAfter ?? globalAuto.currentBalance;
           loadBalance(globalAuto.accountType);
         }
       } catch (err) {
@@ -823,7 +815,7 @@ export function useLiveAutomation() {
       return;
     }
 
-    const tradeAmount = Math.max(Math.floor(globalAuto.martingale.nextAmount * 100) / 100, 0.35);
+    const tradeAmount = normalizeStake(globalAuto.martingale.nextAmount);
     const contractType = signal.type === "BUY" ? "CALL" : "PUT";
 
     globalAuto.tradeLocked = true;
@@ -861,6 +853,7 @@ export function useLiveAutomation() {
         trades: [...(prev?.trades || []), trade],
         currentBalance: result.balance_after,
       }));
+      globalAuto.currentBalance = result.balance_after;
 
       toast.success(`🤖 Auto-trade: ${signal.type} ${SYMBOLS[signal.symbol]} ($${tradeAmount.toFixed(2)}) — Contract #${result.contract_id}`);
     } catch (err) {
@@ -881,9 +874,10 @@ export function useLiveAutomation() {
 
       const bal = await loadBalance(globalAuto.accountType);
       globalAuto.initialBalance = bal;
+      globalAuto.currentBalance = bal;
       globalAuto.running = true;
       globalAuto.config = params;
-      globalAuto.martingale = { consecutiveLosses: 0, nextAmount: params.initialTradeAmount };
+      globalAuto.martingale = { consecutiveLosses: 0, nextAmount: normalizeStake(params.initialTradeAmount) };
       globalAuto.tradeLocked = false;
       globalAuto.signalQueue = null;
 
@@ -1017,6 +1011,8 @@ export function useTestTrade() {
         return;
       }
 
+      const normalizedAmount = normalizeStake(params.amount);
+
       setLoading(true);
       setResult(null);
       // NOTE: Do NOT reset quickTradeExecuted here — it's set by quickTrade()
@@ -1040,6 +1036,7 @@ export function useTestTrade() {
         }
         const data = await api.executeTestTrade({
           ...params,
+          amount: normalizedAmount,
           // Use 4.75min for manual trades (not backtest)
           durationMinutes: TRADE_DURATION_LIVE,
           type: tradeType,

@@ -61,6 +61,7 @@ export interface SignalCandidate {
   metrics: {
     ema9: number;
     ema21: number;
+    ema50: number;
     ema_cross: number;
     ema_gap_pct: number;
     ema_slope: number;
@@ -142,40 +143,58 @@ interface HTFResult {
   htf15m: { direction: number; strength: number };
 }
 
+function getAdaptivePeriods(length: number, fastTarget: number, slowTarget: number) {
+  const maxPeriod = Math.max(1, length - 1);
+  const adaptiveSlow = slowTarget > maxPeriod
+    ? Math.min(maxPeriod, Math.max(2, Math.round(length * 0.7)))
+    : slowTarget;
+  const adaptiveFast = fastTarget >= adaptiveSlow || slowTarget > maxPeriod
+    ? Math.min(adaptiveSlow - 1, Math.max(1, Math.round(adaptiveSlow * 0.45)))
+    : fastTarget;
+
+  return {
+    fast: Math.max(1, adaptiveFast),
+    slow: Math.max(1, adaptiveSlow),
+  };
+}
+
 function computeHTFTrend(prices: number[], times: number[]): HTFResult {
   const result: HTFResult = { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
   if (!times || times.length < 100) return result;
 
   // 5-min candles
   const candles5m = buildCandles(prices, times, 300);
-  if (candles5m.length >= 9) {
+  if (candles5m.length >= 4) {
     const closes = candles5m.map(c => c.close);
-    const ema9 = calculateEMA(closes, Math.min(9, closes.length - 1));
-    const ema21 = closes.length >= 21
-      ? calculateEMA(closes, 21)
-      : calculateEMA(closes, Math.min(closes.length - 1, 5));
+    const { fast, slow } = getAdaptivePeriods(closes.length, 9, 21);
+    const emaFast = calculateEMA(closes, fast);
+    const emaSlow = calculateEMA(closes, slow);
     const last = closes.length - 1;
-    const emaDiff = ema9[last] - ema21[last];
+    const emaDiff = emaFast[last] - emaSlow[last];
+    const emaSlope = last > 0 && emaSlow[last - 1] !== 0
+      ? Math.abs((emaSlow[last] - emaSlow[last - 1]) / emaSlow[last - 1]) * 10000
+      : 0;
     result.htf5m = {
       direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
-      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
     };
   }
 
   // 15-min candles (institutional noise filter)
   const candles15m = buildCandles(prices, times, 900);
-  if (candles15m.length >= 5) {
+  if (candles15m.length >= 4) {
     const closes = candles15m.map(c => c.close);
-    const period = Math.min(9, closes.length - 1);
-    const ema = calculateEMA(closes, period);
-    const ema50 = closes.length >= 50
-      ? calculateEMA(closes, 50)
-      : calculateEMA(closes, Math.min(closes.length - 1, period));
+    const { fast, slow } = getAdaptivePeriods(closes.length, 9, 50);
+    const emaFast = calculateEMA(closes, fast);
+    const emaSlow = calculateEMA(closes, slow);
     const last = closes.length - 1;
-    const emaDiff = ema[last] - ema50[last];
+    const emaDiff = emaFast[last] - emaSlow[last];
+    const emaSlope = last > 0 && emaSlow[last - 1] !== 0
+      ? Math.abs((emaSlow[last] - emaSlow[last - 1]) / emaSlow[last - 1]) * 10000
+      : 0;
     result.htf15m = {
       direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
-      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 : 0,
+      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
     };
   }
 
@@ -458,13 +477,27 @@ export function analyzeSymbol(
   const emaCrossed = (prevEmaDiff <= 0 && emaDiff > 0) || (prevEmaDiff >= 0 && emaDiff < 0);
   const trendUp = emaDiff > 0;
   const trendDown = emaDiff < 0;
+  const institutionalDirection =
+    currentPrice > ema50[last] && ema21[last] >= ema50[last]
+      ? 1
+      : currentPrice < ema50[last] && ema21[last] <= ema50[last]
+        ? -1
+        : 0;
+  const localTrendDirection = trendUp ? 1 : trendDown ? -1 : 0;
+  const institutionalAligned = institutionalDirection === 0 || institutionalDirection === localTrendDirection;
   const trendStrengthRaw = Math.abs(emaDiff) / currentPrice * 10000;
-  const trendConfirmed = trendStrengthRaw > 1.5;
+  const trendConfirmed = trendStrengthRaw > 1.5 && institutionalAligned;
 
   let trendScore = 0;
-  if (emaCrossed) trendScore = 20;
+  if (emaCrossed) trendScore = institutionalAligned ? 20 : 12;
   else if (trendConfirmed) trendScore = Math.min(trendStrengthRaw * 3, 15);
-  else trendScore = Math.min(trendStrengthRaw * 2, 5);
+  else trendScore = Math.min(trendStrengthRaw * 1.5, 5);
+
+  if (institutionalDirection !== 0) {
+    trendScore = institutionalAligned
+      ? Math.min(trendScore + 4, 20)
+      : Math.max(trendScore - 4, 0);
+  }
 
   // ════════════════════════════════════════════════════════════
   // LAYER 3: ZONE — Bollinger S/R Proximity
@@ -650,7 +683,7 @@ export function analyzeSymbol(
 
   const layers: LayerVote[] = [
     { name: "MTF",        direction: htf.direction, weight: 5, passed: htf.direction !== 0, score: mtfScore },
-    { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || emaCrossed, score: trendScore },
+    { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || (emaCrossed && institutionalAligned), score: trendScore },
     { name: "Zone",       direction: zone.inBuyZone ? 1 : zone.inSellZone ? -1 : 0, weight: 3, passed: zone.inBuyZone || zone.inSellZone, score: zoneScore },
     { name: "Exhaustion", direction: stochZone.direction, weight: 3, passed: stochZone.isBuyZone || stochZone.isSellZone, score: exhaustionScore },
     { name: "Momentum",   direction: macdDirection, weight: 2, passed: momentumScore > 5, score: momentumScore },
@@ -748,6 +781,12 @@ export function analyzeSymbol(
     if (macdDirection !== trendDir) conflictPenalty += 5;
   }
 
+  // EMA50 institutional bias conflict
+  if (institutionalDirection !== 0) {
+    const signalDir = type === "BUY" ? 1 : -1;
+    if (institutionalDirection !== signalDir) conflictPenalty += 10;
+  }
+
   // MTF disagreement penalty (v5.2: 15m takes priority)
   const mtfAligned = htf.direction === 0 || (type === "BUY" ? htf.direction > 0 : htf.direction < 0);
   if (htf.direction !== 0 && !mtfAligned) {
@@ -824,6 +863,7 @@ export function analyzeSymbol(
   logicParts.push(`Grade:${grade}`);
   if (htf.direction !== 0) logicParts.push(`MTF:${htf.direction > 0 ? "↑" : "↓"}(${mtfAligned ? "✓" : "✗"})`);
   if (htf.htf15m.direction !== 0) logicParts.push(`15m:${htf.htf15m.direction > 0 ? "↑" : "↓"}`);
+  if (institutionalDirection !== 0) logicParts.push(`EMA50:${institutionalDirection > 0 ? "↑" : "↓"}`);
   if (trendConfirmed) logicParts.push(`Trend:${trendUp ? "↑" : "↓"}`);
   else logicParts.push("Trend:⚠️");
   logicParts.push(`Zone:${zone.position}`);
@@ -862,6 +902,7 @@ export function analyzeSymbol(
     metrics: {
       ema9: ema9[last],
       ema21: ema21[last],
+      ema50: ema50[last],
       ema_cross: emaDiff,
       ema_gap_pct: currentEMAGap,
       ema_slope: currentSlope,
