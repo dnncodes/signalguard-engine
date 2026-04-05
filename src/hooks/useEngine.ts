@@ -639,6 +639,7 @@ export function useLiveAutomation() {
     setAccountTypeState(val);
   }, []);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const stopRef = useRef<() => void>(() => {});
 
   // Sync running state on mount (when navigating back to dashboard)
   useEffect(() => {
@@ -757,7 +758,7 @@ export function useLiveAutomation() {
                 toast.error(`🛑 Max martingale level (${cfg.maxMartingaleLevel}) reached — stopping automation`);
                 globalAuto.settling = false;
                 globalAuto.tradeLocked = false;
-                stopAutomation();
+                stopRef.current();
                 return;
               }
               const nextAmount = info.amount * cfg.martingaleMultiplier;
@@ -768,7 +769,7 @@ export function useLiveAutomation() {
             if (checkProfitTarget()) {
               globalAuto.settling = false;
               globalAuto.tradeLocked = false;
-              stopAutomation();
+              stopRef.current();
               return;
             }
           }
@@ -961,6 +962,9 @@ export function useLiveAutomation() {
     toast.info("Automation stopped");
     loadBalance(globalAuto.accountType);
   }, [loadBalance, settlePendingContracts]);
+
+  // Keep stopRef in sync so settlePendingContracts can call it without circular deps
+  useEffect(() => { stopRef.current = stopAutomation; }, [stopAutomation]);
 
   useEffect(() => {
     setBalance(null);

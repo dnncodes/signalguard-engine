@@ -423,7 +423,7 @@ export function analyzeSymbol(
   // ── Compute all 1-min indicators ──
   const ema9 = calculateEMA(prices, 9);
   const ema21 = calculateEMA(prices, 21);
-  const ema50 = calculateEMA(prices, Math.min(50, prices.length - 1));
+  const ema50 = calculateEMA(prices, prices.length > 50 ? 50 : Math.max(2, prices.length - 1));
   const rsi = calculateRSI(prices, 14);
   const { histogram } = calculateMACD(prices);
   const atr = calculateATR(prices, 14);
