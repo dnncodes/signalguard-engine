@@ -801,13 +801,15 @@ export function analyzeSymbol(
     if (institutionalDirection !== signalDir) conflictPenalty += 10;
   }
 
-  // MTF disagreement penalty (v5.2: 15m takes priority)
+  // MTF disagreement penalty (v5.3: proportional to HTF strength, not flat)
   const mtfAligned = htf.direction === 0 || (type === "BUY" ? htf.direction > 0 : htf.direction < 0);
   if (htf.direction !== 0 && !mtfAligned) {
-    conflictPenalty += 15; // Heavier penalty for 15m disagreement
-    console.log(`[v5.2] MTF CONFLICT: 15min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type}`);
+    // Scale penalty by HTF strength: weak trend = small penalty, strong = heavy
+    const mtfPenalty = Math.min(Math.round(5 + htf.strength * 2), 20);
+    conflictPenalty += mtfPenalty;
+    console.log(`[v5.3] MTF CONFLICT: 15min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type} (penalty:${mtfPenalty}, strength:${htf.strength.toFixed(1)})`);
   } else if (mtfAligned && htf.direction !== 0) {
-    mtfScore = 15; // Bonus for MTF alignment
+    mtfScore = Math.min(10 + Math.round(htf.strength), 15); // Proportional bonus
   }
 
   // Quant conflict: R² strong but direction disagrees
