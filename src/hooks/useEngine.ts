@@ -963,6 +963,9 @@ export function useLiveAutomation() {
     loadBalance(globalAuto.accountType);
   }, [loadBalance, settlePendingContracts]);
 
+  // Keep stopRef in sync so settlePendingContracts can call it without circular deps
+  useEffect(() => { stopRef.current = stopAutomation; }, [stopAutomation]);
+
   useEffect(() => {
     setBalance(null);
     loadBalance(accountType);
