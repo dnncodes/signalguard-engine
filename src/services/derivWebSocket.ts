@@ -33,17 +33,19 @@ class DerivWebSocketClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pendingRequests = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timeout: ReturnType<typeof setTimeout> }>();
   private reqIdCounter = 1;
+  private intentionalDisconnect = false; // Prevents visibilitychange reconnect after manual stop
 
   private visibilityBound = false;
 
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
+    this.intentionalDisconnect = false;
 
     // Auto-reconnect when tab becomes visible again
     if (!this.visibilityBound && typeof document !== "undefined") {
       this.visibilityBound = true;
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && this.status !== "connected") {
+        if (document.visibilityState === "visible" && this.status !== "connected" && !this.intentionalDisconnect) {
           console.log("[DerivWS] Tab visible — reconnecting");
           this.reconnectAttempts = 0;
           this.connect();
@@ -132,12 +134,19 @@ class DerivWebSocketClient {
   }
 
   disconnect() {
+    this.intentionalDisconnect = true; // Prevent visibilitychange from reconnecting
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
-    this.reconnectAttempts = this.maxReconnectAttempts; // prevent reconnect
+    this.reconnectAttempts = this.maxReconnectAttempts; // prevent auto-reconnect
+    // Reject all pending requests
+    for (const [, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("WebSocket disconnected"));
+    }
+    this.pendingRequests.clear();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
