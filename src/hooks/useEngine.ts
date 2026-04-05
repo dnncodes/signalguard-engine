@@ -639,6 +639,7 @@ export function useLiveAutomation() {
     setAccountTypeState(val);
   }, []);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const stopRef = useRef<() => void>(() => {});
 
   // Sync running state on mount (when navigating back to dashboard)
   useEffect(() => {
