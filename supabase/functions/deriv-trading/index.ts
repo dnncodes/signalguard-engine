@@ -449,7 +449,10 @@ serve(async (req: Request) => {
     if (action === "telegram_signal" && req.method === "POST") {
       const body = await req.json();
       const message = formatSignalTelegram(body);
-      await sendTelegramMessage(message);
+      const keyboard = body.symbol && body.type
+        ? buildQuickTradeKeyboard(body.symbol, body.type, body.price || 0)
+        : undefined;
+      await sendTelegramMessage(message, keyboard);
       return jsonResponse({ success: true, message: "Signal sent to Telegram" });
     }
 
