@@ -758,7 +758,7 @@ export function useLiveAutomation() {
                 toast.error(`🛑 Max martingale level (${cfg.maxMartingaleLevel}) reached — stopping automation`);
                 globalAuto.settling = false;
                 globalAuto.tradeLocked = false;
-                stopAutomation();
+                stopRef.current();
                 return;
               }
               const nextAmount = info.amount * cfg.martingaleMultiplier;
@@ -769,7 +769,7 @@ export function useLiveAutomation() {
             if (checkProfitTarget()) {
               globalAuto.settling = false;
               globalAuto.tradeLocked = false;
-              stopAutomation();
+              stopRef.current();
               return;
             }
           }
