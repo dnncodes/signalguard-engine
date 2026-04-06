@@ -1,26 +1,28 @@
 /**
- * Signal Analysis Engine v5.3 — "Audit & Integrity" Edition
+ * Signal Analysis Engine v5.4 — "Audit-Hardened" Edition
  *
- * v5.3 FIXES OVER v5.2:
- * ─ Hard Gates now respect MTF: gates only force direction when 15m trend is
- *   neutral or agrees. Previously gates would force BUY at support even when
- *   15m was bearish, then MTF penalty made the signal weak & false.
- * ─ Hard Gates restricted to DEEP zones only (deep_support/deep_resistance),
- *   no longer fire on near zones — reduces false gate triggers by ~60%.
- * ─ MTF conflict penalty is now proportional to HTF strength (not flat 15).
- * ─ Removed dead `forceEmit` parameter from analyzeSymbol.
- * ─ Gate thresholds tightened: K>95/%B>0.92 (was K>90/%B>0.85).
- * ─ All 8 layers verified: math, integration, and cross-layer compatibility.
+ * CHANGES FROM v5.3.1:
+ * ─ All magic constants extracted into ENGINE_CONFIG for transparency
+ * ─ FVG now checks middle candle (unfilled gap validation)
+ * ─ BoS uses proper swing-point structure (HH/HL & LH/LL detection)
+ * ─ quantScore floor clamped to 0 (was going negative on Z-Score conflict)
+ * ─ Loss-streak filter no longer silently falls back to B-grade
+ * ─ NaN guards on all indicator outputs and price data
+ * ─ Engulfing/Divergence strength multipliers documented with rationale
+ * ─ MACD histogram early-index false spikes prevented
+ * ─ EMA50 graceful fallback when history is marginal
+ * ─ All original layers, window timing, and architecture PRESERVED
  *
- * ARCHITECTURE:
+ * ARCHITECTURE (unchanged):
  * ─ Layer 0: NOISE GATE — Volatility squeeze/extreme kills signals
- * ─ Layer 1: MTF TREND — 5-min EMA9/EMA21 determines macro direction
- * ─ Layer 2: TREND — 1-min EMA9/EMA21 determines micro direction
- * ─ Layer 3: ZONE — Bollinger %B determines S/R proximity
- * ─ Layer 4: EXHAUSTION — Stochastic zone + crossover detection
- * ─ Layer 5: MOMENTUM — MACD histogram direction alignment
+ * ─ Layer 1: MTF TREND — 5m+15m EMA direction (institutional)
+ * ─ Layer 2: TREND — 1-min EMA9/EMA21 micro direction
+ * ─ Layer 3: ZONE — Bollinger %B S/R proximity
+ * ─ Layer 4: EXHAUSTION — Stochastic zone + crossover
+ * ─ Layer 5: MOMENTUM — MACD histogram direction
  * ─ Layer 6: RSI CONTEXT — Extreme RSI hard-locks direction
  * ─ Layer 7: PATTERN + SMC — Engulfing, Divergence, FVG, BoS
+ * ─ Layer 8: QUANT MATH — Linear Regression R², Z-Score, StdDev
  */
 
 import { derivWs } from "./derivWebSocket";
@@ -44,14 +46,171 @@ import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPatte
 // Re-export for backward compatibility
 export { calculateEMA, calculateRSI, calculateMACD, detectDivergence };
 
+// ═════════════════════════════════════════════════════════════
+// CONFIGURABLE PARAMETERS — All thresholds in one place
+// ═════════════════════════════════════════════════════════════
+
+export const ENGINE_CONFIG = {
+  // ── Minimum data requirements ──
+  MIN_PRICES: 50,           // Minimum ticks for analysis
+  MIN_HTF_TICKS: 100,       // Minimum ticks for HTF computation
+  MIN_HTF_CANDLES: 4,       // Minimum candles for HTF EMA
+
+  // ── EMA periods ──
+  EMA_FAST: 9,
+  EMA_SLOW: 21,
+  EMA_INSTITUTIONAL: 50,
+
+  // ── RSI thresholds ──
+  RSI_EXTREME_OVERSOLD: 15,
+  RSI_OVERSOLD: 30,
+  RSI_LEANING_OVERSOLD: 45,
+  RSI_LEANING_OVERBOUGHT: 55,
+  RSI_OVERBOUGHT: 70,
+  RSI_EXTREME_OVERBOUGHT: 85,
+  RSI_CHOP_RANGE: 8,        // Range < this in last 10 bars = choppy
+  RSI_CHOP_LOW: 40,
+  RSI_CHOP_HIGH: 60,
+
+  // ── Stochastic thresholds ──
+  STOCH_OVERSOLD: 20,
+  STOCH_OVERBOUGHT: 80,
+  STOCH_MID_BUY_CEIL: 40,   // Mid-range cross upper bound for buy
+  STOCH_MID_SELL_FLOOR: 60,  // Mid-range cross lower bound for sell
+  STOCH_EXTREME_HIGH: 95,    // Gate 4 extreme overbought
+  STOCH_EXTREME_LOW: 5,      // Gate 5 extreme oversold
+
+  // ── Bollinger Band zone thresholds ──
+  BB_DEEP_SUPPORT: 0.10,
+  BB_NEAR_SUPPORT: 0.25,
+  BB_NEAR_RESISTANCE: 0.75,
+  BB_DEEP_RESISTANCE: 0.90,
+  BB_GATE4_THRESHOLD: 0.92,
+  BB_GATE5_THRESHOLD: 0.08,
+  BB_EXTREME_LOW: 0.10,
+  BB_EXTREME_HIGH: 0.90,
+
+  // ── Volatility classification ──
+  VOL_SQUEEZE_RATIO: 0.5,    // BW < avg * this = squeeze
+  VOL_EXPANSION_RATIO: 1.5,  // BW > avg * this = expansion
+  VOL_EXTREME_RATIO: 2.0,    // BW > avg * this = extreme
+  VOL_ATR_EXTREME_PCT: 0.5,  // ATR% > this = extreme
+
+  // ── Trend detection ──
+  TREND_STRENGTH_THRESHOLD: 1.5,  // emaDiff/price*10000 > this = confirmed
+  TREND_CROSS_ALIGNED_SCORE: 20,
+  TREND_CROSS_UNALIGNED_SCORE: 12,
+  TREND_CONFIRMED_MULT: 3,   // trendStrengthRaw * this, capped at 15
+  TREND_WEAK_MULT: 1.5,      // trendStrengthRaw * this, capped at 5
+  TREND_INSTITUTIONAL_BONUS: 4,
+
+  // ── Score multipliers (documented rationale) ──
+  // Zone score: 0.15 = max 15 from zone_strength 100 (keeps zone as supporting, not dominant)
+  ZONE_SCORE_MULT: 0.15,
+  ZONE_SCORE_CAP: 15,
+  // Exhaustion score: same logic as zone
+  EXHAUSTION_SCORE_MULT: 0.15,
+  EXHAUSTION_SCORE_CAP: 15,
+  // Engulfing aligned: 0.12 = max ~12 from strength 100 (zone-aligned engulfing is strong)
+  ENGULFING_ALIGNED_MULT: 0.12,
+  ENGULFING_ALIGNED_CAP: 10,
+  // Engulfing trend-only: 0.06 = half weight (less conviction without zone)
+  ENGULFING_TREND_MULT: 0.06,
+  ENGULFING_TREND_CAP: 5,
+  // Divergence: 0.10 = max 10 (divergence alone is medium-strength)
+  DIVERGENCE_MULT: 0.10,
+  DIVERGENCE_CAP: 10,
+  // SMC: 0.10 = max 10 (supplementary confirmation)
+  SMC_SCORE_MULT: 0.10,
+  SMC_SCORE_CAP: 10,
+  // Slope: 40x raw slope capped at 5 (minor tiebreaker)
+  SLOPE_MULT: 40,
+  SLOPE_CAP: 5,
+  // Momentum (non-cross): MACD histogram * 200 capped at 8
+  MOMENTUM_HIST_MULT: 200,
+  MOMENTUM_HIST_CAP: 8,
+  MOMENTUM_CROSS_SCORE: 15,
+
+  // ── Quant Math (Layer 8) ──
+  R2_STRONG_THRESHOLD: 0.7,    // Strong linear trend
+  R2_WEAK_THRESHOLD: 0.3,      // Choppy / no trend
+  R2_DEVIATION_THRESHOLD: 0.5, // Min R² for regression deviation signal
+  ZSCORE_EXTREME: 2.0,         // >2σ from mean = mean-reversion
+  ZSCORE_REINFORCE_BONUS: 5,
+  ZSCORE_CONFLICT_PENALTY: 3,
+  STDDEV_BREAKOUT_CHANGE: 0.3,
+  QUANT_SCORE_CAP: 15,
+
+  // ── Conflict penalties ──
+  PENALTY_RSI_HARDLOCK_OVERRIDE: 10,
+  PENALTY_DEEP_ZONE_GATE: 8,
+  PENALTY_EXTREME_STOCH_GATE: 5,
+  PENALTY_TREND_ZONE_CONFLICT: 5,
+  PENALTY_RSI_STOCH_CONFLICT: 8,
+  PENALTY_MACD_TREND_CONFLICT: 5,
+  PENALTY_INSTITUTIONAL_CONFLICT: 10,
+  PENALTY_QUANT_R2_CONFLICT: 7,
+  PENALTY_NOISY_MARKET: 15,
+  PENALTY_RSI_CHOPPY: 8,
+
+  // ── MTF ──
+  MTF_STRENGTH_MULT: 1.5,
+  MTF_SCORE_CAP: 15,
+  MTF_PENALTY_BASE: 5,
+  MTF_PENALTY_STRENGTH_MULT: 2,
+  MTF_PENALTY_CAP: 20,
+  MTF_ALIGNED_BONUS_BASE: 10,
+  MTF_GATE_BLOCK_STRENGTH: 3,  // Gates 2/3
+  MTF_GATE_BLOCK_STRONG: 5,    // Gates 4/5
+
+  // ── Grading ──
+  GRADE_A_MIN_LAYERS: 5,
+  GRADE_A_MIN_SCORE: 60,
+  GRADE_B_MIN_LAYERS: 3,
+  GRADE_B_MIN_SCORE: 40,
+
+  // ── Expectancy (Batista formula) ──
+  // estimatedWinRate = BASE + (score/100) * SCALE
+  // Rationale: a score-0 signal has ~45% win rate (slightly below breakeven),
+  // a perfect score-100 signal has ~70% (45+25). Payout is Deriv standard 85%.
+  EXPECTANCY_BASE_WINRATE: 0.45,
+  EXPECTANCY_WINRATE_SCALE: 0.25,
+  PAYOUT_RATIO: 0.85,
+
+  // ── FVG minimum gap percentage ──
+  FVG_MIN_GAP_PCT: 0.001,
+  FVG_STRENGTH_MULT: 500,
+  FVG_STRENGTH_CAP: 30,
+
+  // ── BoS ──
+  BOS_LOOKBACK: 5,
+  BOS_STRENGTH: 20,
+
+  // ── Signal Generator Window ──
+  SCAN_INTERVAL_MS: 30 * 1000,
+  WINDOW_OPEN_MS: 3 * 60 * 1000,
+  WINDOW_CLOSE_MS: 5 * 60 * 1000,
+  LOSS_STREAK_A_ONLY: 3,
+} as const;
+
+// ─── NaN safety utility ─────────────────────────────────────
+
+function safeNum(val: number, fallback = 0): number {
+  return Number.isFinite(val) ? val : fallback;
+}
+
+function sanitizePrices(prices: number[]): number[] {
+  return prices.map(p => Number.isFinite(p) ? p : 0);
+}
+
 // ─── Signal Candidate ────────────────────────────────────────
 
 export interface SignalCandidate {
   symbol: string;
   type: "BUY" | "SELL";
   price: number;
-  score: number;       // 0-100 composite confidence
-  confidence: number;  // 0-100 (= score in v5.0)
+  score: number;
+  confidence: number;
   grade: "A" | "B" | "C";
   details: string;
   logic: string;
@@ -88,7 +247,6 @@ export interface SignalCandidate {
     htf_trend_15m: number;
     mtf_aligned: boolean;
     smc_signal: string | null;
-    // v5.2 Quant Math
     std_dev: number;
     lin_reg_slope: number;
     lin_reg_r2: number;
@@ -132,7 +290,6 @@ function buildCandles(prices: number[], times: number[], intervalSec: number): C
 }
 
 // ─── Multi-Timeframe Trend ───────────────────────────────────
-// Compute higher timeframe trend from 5-min AND 15-min candles (institutional standard)
 
 interface HTFResult {
   direction: number;
@@ -158,45 +315,45 @@ function getAdaptivePeriods(length: number, fastTarget: number, slowTarget: numb
 
 function computeHTFTrend(prices: number[], times: number[]): HTFResult {
   const result: HTFResult = { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
-  if (!times || times.length < 100) return result;
+  if (!times || times.length < ENGINE_CONFIG.MIN_HTF_TICKS) return result;
 
   // 5-min candles
   const candles5m = buildCandles(prices, times, 300);
-  if (candles5m.length >= 4) {
+  if (candles5m.length >= ENGINE_CONFIG.MIN_HTF_CANDLES) {
     const closes = candles5m.map(c => c.close);
-    const { fast, slow } = getAdaptivePeriods(closes.length, 9, 21);
+    const { fast, slow } = getAdaptivePeriods(closes.length, ENGINE_CONFIG.EMA_FAST, ENGINE_CONFIG.EMA_SLOW);
     const emaFast = calculateEMA(closes, fast);
     const emaSlow = calculateEMA(closes, slow);
     const last = closes.length - 1;
-    const emaDiff = emaFast[last] - emaSlow[last];
-    const emaSlope = last > 0 && emaSlow[last - 1] !== 0
-      ? Math.abs((emaSlow[last] - emaSlow[last - 1]) / emaSlow[last - 1]) * 10000
+    const emaDiff = safeNum(emaFast[last]) - safeNum(emaSlow[last]);
+    const emaSlope = last > 0 && safeNum(emaSlow[last - 1]) !== 0
+      ? Math.abs((safeNum(emaSlow[last]) - safeNum(emaSlow[last - 1])) / safeNum(emaSlow[last - 1])) * 10000
       : 0;
     result.htf5m = {
       direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
-      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
+      strength: safeNum(closes[last]) > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
     };
   }
 
   // 15-min candles (institutional noise filter)
   const candles15m = buildCandles(prices, times, 900);
-  if (candles15m.length >= 4) {
+  if (candles15m.length >= ENGINE_CONFIG.MIN_HTF_CANDLES) {
     const closes = candles15m.map(c => c.close);
-    const { fast, slow } = getAdaptivePeriods(closes.length, 9, 50);
+    const { fast, slow } = getAdaptivePeriods(closes.length, ENGINE_CONFIG.EMA_FAST, ENGINE_CONFIG.EMA_INSTITUTIONAL);
     const emaFast = calculateEMA(closes, fast);
     const emaSlow = calculateEMA(closes, slow);
     const last = closes.length - 1;
-    const emaDiff = emaFast[last] - emaSlow[last];
-    const emaSlope = last > 0 && emaSlow[last - 1] !== 0
-      ? Math.abs((emaSlow[last] - emaSlow[last - 1]) / emaSlow[last - 1]) * 10000
+    const emaDiff = safeNum(emaFast[last]) - safeNum(emaSlow[last]);
+    const emaSlope = last > 0 && safeNum(emaSlow[last - 1]) !== 0
+      ? Math.abs((safeNum(emaSlow[last]) - safeNum(emaSlow[last - 1])) / safeNum(emaSlow[last - 1])) * 10000
       : 0;
     result.htf15m = {
       direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
-      strength: closes[last] > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
+      strength: safeNum(closes[last]) > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
     };
   }
 
-  // Combined: 15m takes priority (institutional), 5m confirms
+  // Combined: 15m priority (institutional), 5m confirms
   if (result.htf15m.direction !== 0) {
     result.direction = result.htf15m.direction;
     result.strength = result.htf15m.strength + (result.htf5m.direction === result.htf15m.direction ? result.htf5m.strength * 0.5 : 0);
@@ -217,17 +374,21 @@ function classifyVolatility(
 ): VolatilityState {
   if (last < 20) return "normal";
 
-  const currentBW = bandwidth[last];
+  const currentBW = safeNum(bandwidth[last]);
   let bwSum = 0, bwCount = 0;
   for (let i = Math.max(0, last - 19); i <= last; i++) {
-    if (bandwidth[i] > 0) { bwSum += bandwidth[i]; bwCount++; }
+    const bw = safeNum(bandwidth[i]);
+    if (bw > 0) { bwSum += bw; bwCount++; }
   }
-  const avgBW = bwCount > 0 ? bwSum / bwCount : currentBW;
-  const atrPct = prices[last] > 0 ? (atr[last] / prices[last]) * 100 : 0;
+  // Fallback: if no valid BW samples, treat as normal
+  if (bwCount === 0) return "normal";
+  const avgBW = bwSum / bwCount;
+  const price = safeNum(prices[last]);
+  const atrPct = price > 0 ? (safeNum(atr[last]) / price) * 100 : 0;
 
-  if (currentBW < avgBW * 0.5) return "squeeze";
-  if (currentBW > avgBW * 2.0 || atrPct > 0.5) return "extreme";
-  if (currentBW > avgBW * 1.5) return "expansion";
+  if (currentBW < avgBW * ENGINE_CONFIG.VOL_SQUEEZE_RATIO) return "squeeze";
+  if (currentBW > avgBW * ENGINE_CONFIG.VOL_EXTREME_RATIO || atrPct > ENGINE_CONFIG.VOL_ATR_EXTREME_PCT) return "extreme";
+  if (currentBW > avgBW * ENGINE_CONFIG.VOL_EXPANSION_RATIO) return "expansion";
   return "normal";
 }
 
@@ -241,53 +402,45 @@ interface ZoneResult {
 }
 
 function detectZone(percentB: number): ZoneResult {
-  if (percentB <= 0.10) {
-    return { inBuyZone: true, inSellZone: false, zoneStrength: Math.min((0.10 - percentB) / 0.10 * 100, 100), position: "deep_support" };
+  const pB = safeNum(percentB, 0.5);
+  if (pB <= ENGINE_CONFIG.BB_DEEP_SUPPORT) {
+    return { inBuyZone: true, inSellZone: false, zoneStrength: Math.min((ENGINE_CONFIG.BB_DEEP_SUPPORT - pB) / ENGINE_CONFIG.BB_DEEP_SUPPORT * 100, 100), position: "deep_support" };
   }
-  if (percentB <= 0.25) {
-    return { inBuyZone: true, inSellZone: false, zoneStrength: Math.min((0.25 - percentB) / 0.25 * 60, 60), position: "near_support" };
+  if (pB <= ENGINE_CONFIG.BB_NEAR_SUPPORT) {
+    return { inBuyZone: true, inSellZone: false, zoneStrength: Math.min((ENGINE_CONFIG.BB_NEAR_SUPPORT - pB) / ENGINE_CONFIG.BB_NEAR_SUPPORT * 60, 60), position: "near_support" };
   }
-  if (percentB >= 0.90) {
-    return { inBuyZone: false, inSellZone: true, zoneStrength: Math.min((percentB - 0.90) / 0.10 * 100, 100), position: "deep_resistance" };
+  if (pB >= ENGINE_CONFIG.BB_DEEP_RESISTANCE) {
+    return { inBuyZone: false, inSellZone: true, zoneStrength: Math.min((pB - ENGINE_CONFIG.BB_DEEP_RESISTANCE) / (1 - ENGINE_CONFIG.BB_DEEP_RESISTANCE) * 100, 100), position: "deep_resistance" };
   }
-  if (percentB >= 0.75) {
-    return { inBuyZone: false, inSellZone: true, zoneStrength: Math.min((percentB - 0.75) / 0.25 * 60, 60), position: "near_resistance" };
+  if (pB >= ENGINE_CONFIG.BB_NEAR_RESISTANCE) {
+    return { inBuyZone: false, inSellZone: true, zoneStrength: Math.min((pB - ENGINE_CONFIG.BB_NEAR_RESISTANCE) / (1 - ENGINE_CONFIG.BB_NEAR_RESISTANCE) * 60, 60), position: "near_resistance" };
   }
   return { inBuyZone: false, inSellZone: false, zoneStrength: 0, position: "mid_range" };
 }
 
-// ─── FIXED Stochastic Zone Detection ─────────────────────────
-// v5.0 FIX: K > 80 IS overbought regardless of crossover!
-// The v4.0 bug labeled K:100/D:93 as "neutral" because there was no cross.
+// ─── Stochastic Zone Detection ───────────────────────────────
 
 interface StochZone {
-  isBuyZone: boolean;    // oversold territory
-  isSellZone: boolean;   // overbought territory
-  hasCross: boolean;     // K/D crossover detected
-  strength: number;      // 0-100
+  isBuyZone: boolean;
+  isSellZone: boolean;
+  hasCross: boolean;
+  strength: number;
   signal: string;
-  direction: number;     // +1 buy, -1 sell, 0 neutral
+  direction: number;
 }
 
 function detectStochZone(k: number[], d: number[], last: number): StochZone {
   if (last < 2) return { isBuyZone: false, isSellZone: false, hasCross: false, strength: 0, signal: "neutral", direction: 0 };
 
-  const currK = k[last], currD = d[last];
-  const prevK = k[last - 1], prevD = d[last - 1];
+  const currK = safeNum(k[last], 50), currD = safeNum(d[last], 50);
+  const prevK = safeNum(k[last - 1], 50), prevD = safeNum(d[last - 1], 50);
 
-  // Crossover detection
   const bullishCross = prevK <= prevD && currK > currD;
   const bearishCross = prevK >= prevD && currK < currD;
 
-  // v5.0: Zone detection WITHOUT requiring crossover
-  // K > 80 = overbought zone (sell bias)
-  // K < 20 = oversold zone (buy bias)
-  // Cross amplifies the signal
-
-  if (currK < 20) {
-    // OVERSOLD zone
+  if (currK < ENGINE_CONFIG.STOCH_OVERSOLD) {
     const crossBonus = bullishCross ? 50 : 0;
-    const depth = (20 - currK) / 20 * 50;
+    const depth = (ENGINE_CONFIG.STOCH_OVERSOLD - currK) / ENGINE_CONFIG.STOCH_OVERSOLD * 50;
     return {
       isBuyZone: true, isSellZone: false, hasCross: bullishCross,
       strength: Math.min(depth + crossBonus, 100),
@@ -296,10 +449,9 @@ function detectStochZone(k: number[], d: number[], last: number): StochZone {
     };
   }
 
-  if (currK > 80) {
-    // OVERBOUGHT zone — v5.0 FIX: this is ALWAYS sell-biased
+  if (currK > ENGINE_CONFIG.STOCH_OVERBOUGHT) {
     const crossBonus = bearishCross ? 50 : 0;
-    const depth = (currK - 80) / 20 * 50;
+    const depth = (currK - ENGINE_CONFIG.STOCH_OVERBOUGHT) / (100 - ENGINE_CONFIG.STOCH_OVERBOUGHT) * 50;
     return {
       isBuyZone: false, isSellZone: true, hasCross: bearishCross,
       strength: Math.min(depth + crossBonus, 100),
@@ -308,192 +460,241 @@ function detectStochZone(k: number[], d: number[], last: number): StochZone {
     };
   }
 
-  // Mid-range crossovers (weaker signal)
-  if (bullishCross && currK < 40) {
+  if (bullishCross && currK < ENGINE_CONFIG.STOCH_MID_BUY_CEIL) {
     return { isBuyZone: false, isSellZone: false, hasCross: true, strength: 20, signal: "mid_cross_up", direction: 1 };
   }
-  if (bearishCross && currK > 60) {
+  if (bearishCross && currK > ENGINE_CONFIG.STOCH_MID_SELL_FLOOR) {
     return { isBuyZone: false, isSellZone: false, hasCross: true, strength: 20, signal: "mid_cross_down", direction: -1 };
   }
 
   return { isBuyZone: false, isSellZone: false, hasCross: false, strength: 0, signal: "neutral", direction: 0 };
 }
 
-// ─── Smart Money Concepts ────────────────────────────────────
+// ─── Smart Money Concepts (v5.4 — proper FVG + BoS) ─────────
 
 interface SMCResult {
-  fvg: "bullish" | "bearish" | null;        // Fair Value Gap
-  bos: "bullish" | "bearish" | null;        // Break of Structure
-  direction: number;                         // +1 buy, -1 sell, 0 neutral
-  strength: number;                          // 0-100
+  fvg: "bullish" | "bearish" | null;
+  bos: "bullish" | "bearish" | null;
+  direction: number;
+  strength: number;
   description: string | null;
 }
 
 function detectSMC(prices: number[], times?: number[]): SMCResult {
   const result: SMCResult = { fvg: null, bos: null, direction: 0, strength: 0, description: null };
 
-  if (!times || prices.length < 100) return result;
+  if (!times || prices.length < ENGINE_CONFIG.MIN_HTF_TICKS) return result;
 
-  // Build 1-min candles for structure analysis
   const candles = buildCandles(prices, times, 60);
   if (candles.length < 10) return result;
 
   const last = candles.length - 1;
 
-  // ── Fair Value Gap Detection ──
-  // Bullish FVG: candle[i].low > candle[i-2].high (gap up)
-  // Bearish FVG: candle[i].high < candle[i-2].low (gap down)
+  // ── Fair Value Gap Detection (v5.4 FIX: checks middle candle) ──
+  // Bullish FVG: candle[i-2].high < candle[i].low AND middle candle didn't fill the gap
+  // This means the gap between c0.high and c2.low was NOT covered by c1's range
   if (last >= 2) {
     const c0 = candles[last - 2]; // oldest
+    const c1 = candles[last - 1]; // middle — must NOT fill the gap
     const c2 = candles[last];     // newest
 
     if (c2.low > c0.high) {
-      // Bullish FVG — price gapped up, if price returns here → buy
-      const gapSize = c2.low - c0.high;
-      const avgPrice = (c0.close + c2.close) / 2;
-      const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
-      if (gapPct > 0.001) {
-        result.fvg = "bullish";
-        result.direction += 1;
-        result.strength += Math.min(gapPct * 500, 30);
+      // Potential bullish FVG gap exists
+      // v5.4: Validate gap is UNFILLED — middle candle's low must be above c0.high
+      // (if c1 dipped into the gap, the FVG is filled/invalid)
+      const gapUnfilled = c1.low >= c0.high;
+      if (gapUnfilled) {
+        const gapSize = c2.low - c0.high;
+        const avgPrice = (c0.close + c2.close) / 2;
+        const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
+        if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
+          result.fvg = "bullish";
+          result.direction += 1;
+          result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
+        }
       }
     } else if (c2.high < c0.low) {
-      // Bearish FVG
-      const gapSize = c0.low - c2.high;
-      const avgPrice = (c0.close + c2.close) / 2;
-      const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
-      if (gapPct > 0.001) {
-        result.fvg = "bearish";
-        result.direction -= 1;
-        result.strength += Math.min(gapPct * 500, 30);
+      // Potential bearish FVG
+      // v5.4: Middle candle's high must be below c0.low (gap unfilled)
+      const gapUnfilled = c1.high <= c0.low;
+      if (gapUnfilled) {
+        const gapSize = c0.low - c2.high;
+        const avgPrice = (c0.close + c2.close) / 2;
+        const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
+        if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
+          result.fvg = "bearish";
+          result.direction -= 1;
+          result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
+        }
       }
     }
   }
 
-  // ── Break of Structure (BoS) ──
-  // Look for swing highs/lows in last 10 candles and check if latest candle broke them
-  if (last >= 5) {
-    // Find highest high and lowest low of candles[last-5..last-1]
-    let swingHigh = -Infinity, swingLow = Infinity;
-    for (let i = last - 5; i < last; i++) {
-      if (candles[i].high > swingHigh) swingHigh = candles[i].high;
-      if (candles[i].low < swingLow) swingLow = candles[i].low;
+  // ── Break of Structure (v5.4 FIX: proper swing-point detection) ──
+  // Instead of simple breakout, detect swing highs/lows and check for
+  // structural break: HH after HL = bullish BoS, LL after LH = bearish BoS
+  if (last >= 8) {
+    const lookback = Math.min(ENGINE_CONFIG.BOS_LOOKBACK, last - 3);
+
+    // Find the two most recent swing highs and swing lows
+    const swingHighs: { idx: number; price: number }[] = [];
+    const swingLows: { idx: number; price: number }[] = [];
+
+    for (let i = last - lookback * 2; i <= last - 1; i++) {
+      if (i < 1 || i >= candles.length - 1) continue;
+      // Swing high: higher than both neighbors
+      if (candles[i].high > candles[i - 1].high && candles[i].high > candles[i + 1].high) {
+        swingHighs.push({ idx: i, price: candles[i].high });
+      }
+      // Swing low: lower than both neighbors
+      if (candles[i].low < candles[i - 1].low && candles[i].low < candles[i + 1].low) {
+        swingLows.push({ idx: i, price: candles[i].low });
+      }
     }
 
     const latestCandle = candles[last];
-    // Bullish BoS: close above swing high
-    if (latestCandle.close > swingHigh) {
-      result.bos = "bullish";
-      result.direction += 1;
-      result.strength += 20;
+
+    // Bullish BoS: latest candle closes above the most recent swing high
+    // AND the most recent swing low is a Higher Low (compared to previous swing low)
+    if (swingHighs.length >= 1 && swingLows.length >= 2) {
+      const recentHigh = swingHighs[swingHighs.length - 1];
+      const [prevLow, currLow] = swingLows.slice(-2);
+      // Higher Low + break above swing high = structural bullish break
+      if (currLow.price > prevLow.price && latestCandle.close > recentHigh.price) {
+        result.bos = "bullish";
+        result.direction += 1;
+        result.strength += ENGINE_CONFIG.BOS_STRENGTH;
+      }
     }
-    // Bearish BoS: close below swing low
-    else if (latestCandle.close < swingLow) {
-      result.bos = "bearish";
-      result.direction -= 1;
-      result.strength += 20;
+
+    // Bearish BoS: latest candle closes below recent swing low
+    // AND the most recent swing high is a Lower High
+    if (!result.bos && swingHighs.length >= 2 && swingLows.length >= 1) {
+      const recentLow = swingLows[swingLows.length - 1];
+      const [prevHigh, currHigh] = swingHighs.slice(-2);
+      if (currHigh.price < prevHigh.price && latestCandle.close < recentLow.price) {
+        result.bos = "bearish";
+        result.direction -= 1;
+        result.strength += ENGINE_CONFIG.BOS_STRENGTH;
+      }
     }
   }
 
-  // Build description
   const parts: string[] = [];
   if (result.fvg) parts.push(`FVG:${result.fvg}`);
   if (result.bos) parts.push(`BoS:${result.bos}`);
   result.description = parts.length > 0 ? parts.join(" + ") : null;
 
-  // Normalize direction
+  // Normalize direction to -1/0/+1
   result.direction = result.direction > 0 ? 1 : result.direction < 0 ? -1 : 0;
 
   return result;
 }
 
 // ═════════════════════════════════════════════════════════════
-// MAIN ANALYSIS FUNCTION (v5.0)
+// MAIN ANALYSIS FUNCTION (v5.4)
 // ═════════════════════════════════════════════════════════════
 
 export function analyzeSymbol(
   prices: number[],
   times?: number[],
 ): SignalCandidate | null {
-  if (prices.length < 50) return null;
+  if (prices.length < ENGINE_CONFIG.MIN_PRICES) return null;
+
+  // ── Sanitize input (NaN guard) ──
+  const cleanPrices = sanitizePrices(prices);
 
   // ── Compute all 1-min indicators ──
-  const ema9 = calculateEMA(prices, 9);
-  const ema21 = calculateEMA(prices, 21);
-  const ema50 = calculateEMA(prices, prices.length > 50 ? 50 : Math.max(2, prices.length - 1));
-  const rsi = calculateRSI(prices, 14);
-  const { histogram } = calculateMACD(prices);
-  const atr = calculateATR(prices, 14);
+  const ema9 = calculateEMA(cleanPrices, ENGINE_CONFIG.EMA_FAST);
+  const ema21 = calculateEMA(cleanPrices, ENGINE_CONFIG.EMA_SLOW);
+  // EMA50: graceful fallback — need at least period+1 valid data points
+  const ema50Period = cleanPrices.length > ENGINE_CONFIG.EMA_INSTITUTIONAL + 1
+    ? ENGINE_CONFIG.EMA_INSTITUTIONAL
+    : Math.max(2, Math.floor(cleanPrices.length * 0.6));
+  const ema50 = calculateEMA(cleanPrices, ema50Period);
+  const rsi = calculateRSI(cleanPrices, 14);
+  const { histogram } = calculateMACD(cleanPrices);
+  const atr = calculateATR(cleanPrices, 14);
   const slope = calculateEMASlope(ema9, 5);
-  const emaGap = calculateEMAGap(ema9, ema21, prices);
-  const bb = calculateBollingerBands(prices, 20, 2);
-  const stoch = calculateStochastic(prices, 14, 3);
-  // v5.2: Quant Math indicators
-  const stdDev = calculateStdDev(prices, 20);
-  const linReg = calculateLinearRegression(prices, 20);
-  const zScore = calculateZScore(prices, 20);
+  const emaGap = calculateEMAGap(ema9, ema21, cleanPrices);
+  const bb = calculateBollingerBands(cleanPrices, 20, 2);
+  const stoch = calculateStochastic(cleanPrices, 14, 3);
+  const stdDev = calculateStdDev(cleanPrices, 20);
+  const linReg = calculateLinearRegression(cleanPrices, 20);
+  const zScore = calculateZScore(cleanPrices, 20);
 
-  const last = prices.length - 1;
-  const currentPrice = prices[last];
-  const currentRSI = rsi[last];
-  const currentHistogram = histogram[last];
-  const prevHistogram = histogram[last - 1];
-  const currentATR = atr[last];
-  const currentSlope = slope[last];
-  const currentEMAGap = emaGap[last];
-  const currentPercentB = bb.percentB[last];
-  const currentBandwidth = bb.bandwidth[last];
-  // v5.2: Quant values
-  const currentStdDev = stdDev[last];
-  const currentLinRegSlope = linReg.slope[last];
-  const currentR2 = linReg.r2[last];
-  const currentLinRegDev = linReg.deviation[last];
-  const currentZScore = zScore[last];
+  const last = cleanPrices.length - 1;
+  const currentPrice = safeNum(cleanPrices[last]);
+  if (currentPrice === 0) return null; // No valid price
+
+  const currentRSI = safeNum(rsi[last], 50);
+  const currentHistogram = safeNum(histogram[last]);
+  // v5.4 FIX: guard prevHistogram index
+  const prevHistogram = last > 0 ? safeNum(histogram[last - 1]) : 0;
+  const currentATR = safeNum(atr[last]);
+  const currentSlope = safeNum(slope[last]);
+  const currentEMAGap = safeNum(emaGap[last]);
+  const currentPercentB = safeNum(bb.percentB[last], 0.5);
+  const currentBandwidth = safeNum(bb.bandwidth[last]);
+  const currentStdDev = safeNum(stdDev[last]);
+  const currentLinRegSlope = safeNum(linReg.slope[last]);
+  const currentR2 = safeNum(linReg.r2[last]);
+  const currentLinRegDev = safeNum(linReg.deviation[last]);
+  const currentZScore = safeNum(zScore[last]);
 
   // ════════════════════════════════════════════════════════════
   // LAYER 0: NOISE GATE — Volatility Filter
   // ════════════════════════════════════════════════════════════
 
-  const volState = classifyVolatility(bb.bandwidth, atr, prices, last);
+  const volState = classifyVolatility(bb.bandwidth, atr, cleanPrices, last);
   const isNoisyMarket = volState === "squeeze" || volState === "extreme";
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 1: MTF TREND — 5-min candle direction (NEW in v5.0)
-  // v5.1 FIX: Compute mtfScore immediately (was always 0 before!)
+  // LAYER 1: MTF TREND — 5m+15m candle direction
   // ════════════════════════════════════════════════════════════
 
-  const htf: HTFResult = times ? computeHTFTrend(prices, times) : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
-  let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * 1.5, 15) : 0;
+  const htf: HTFResult = times
+    ? computeHTFTrend(cleanPrices, times)
+    : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
+  let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * ENGINE_CONFIG.MTF_STRENGTH_MULT, ENGINE_CONFIG.MTF_SCORE_CAP) : 0;
 
   // ════════════════════════════════════════════════════════════
   // LAYER 2: TREND — EMA9 vs EMA21 (1-min)
   // ════════════════════════════════════════════════════════════
 
-  const emaDiff = ema9[last] - ema21[last];
-  const prevEmaDiff = ema9[last - 1] - ema21[last - 1];
+  const ema9Last = safeNum(ema9[last]);
+  const ema21Last = safeNum(ema21[last]);
+  const ema50Last = safeNum(ema50[last]);
+  const ema9Prev = last > 0 ? safeNum(ema9[last - 1]) : ema9Last;
+  const ema21Prev = last > 0 ? safeNum(ema21[last - 1]) : ema21Last;
+
+  const emaDiff = ema9Last - ema21Last;
+  const prevEmaDiff = ema9Prev - ema21Prev;
   const emaCrossed = (prevEmaDiff <= 0 && emaDiff > 0) || (prevEmaDiff >= 0 && emaDiff < 0);
   const trendUp = emaDiff > 0;
   const trendDown = emaDiff < 0;
+
+  // Institutional filter: price + EMA21 both above/below EMA50
   const institutionalDirection =
-    currentPrice > ema50[last] && ema21[last] >= ema50[last]
+    currentPrice > ema50Last && ema21Last >= ema50Last
       ? 1
-      : currentPrice < ema50[last] && ema21[last] <= ema50[last]
+      : currentPrice < ema50Last && ema21Last <= ema50Last
         ? -1
         : 0;
   const localTrendDirection = trendUp ? 1 : trendDown ? -1 : 0;
   const institutionalAligned = institutionalDirection === 0 || institutionalDirection === localTrendDirection;
-  const trendStrengthRaw = Math.abs(emaDiff) / currentPrice * 10000;
-  const trendConfirmed = trendStrengthRaw > 1.5 && institutionalAligned;
+  const trendStrengthRaw = currentPrice > 0 ? Math.abs(emaDiff) / currentPrice * 10000 : 0;
+  const trendConfirmed = trendStrengthRaw > ENGINE_CONFIG.TREND_STRENGTH_THRESHOLD && institutionalAligned;
 
   let trendScore = 0;
-  if (emaCrossed) trendScore = institutionalAligned ? 20 : 12;
-  else if (trendConfirmed) trendScore = Math.min(trendStrengthRaw * 3, 15);
-  else trendScore = Math.min(trendStrengthRaw * 1.5, 5);
+  if (emaCrossed) trendScore = institutionalAligned ? ENGINE_CONFIG.TREND_CROSS_ALIGNED_SCORE : ENGINE_CONFIG.TREND_CROSS_UNALIGNED_SCORE;
+  else if (trendConfirmed) trendScore = Math.min(trendStrengthRaw * ENGINE_CONFIG.TREND_CONFIRMED_MULT, 15);
+  else trendScore = Math.min(trendStrengthRaw * ENGINE_CONFIG.TREND_WEAK_MULT, 5);
 
   if (institutionalDirection !== 0) {
     trendScore = institutionalAligned
-      ? Math.min(trendScore + 4, 20)
-      : Math.max(trendScore - 4, 0);
+      ? Math.min(trendScore + ENGINE_CONFIG.TREND_INSTITUTIONAL_BONUS, 20)
+      : Math.max(trendScore - ENGINE_CONFIG.TREND_INSTITUTIONAL_BONUS, 0);
   }
 
   // ════════════════════════════════════════════════════════════
@@ -503,37 +704,42 @@ export function analyzeSymbol(
   const zone = detectZone(currentPercentB);
   let zoneScore = 0;
   if (zone.inBuyZone || zone.inSellZone) {
-    zoneScore = Math.min(zone.zoneStrength * 0.15, 15);
+    zoneScore = Math.min(zone.zoneStrength * ENGINE_CONFIG.ZONE_SCORE_MULT, ENGINE_CONFIG.ZONE_SCORE_CAP);
   }
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 4: EXHAUSTION — FIXED Stochastic (v5.0)
+  // LAYER 4: EXHAUSTION — Stochastic
   // ════════════════════════════════════════════════════════════
 
   const stochZone = detectStochZone(stoch.k, stoch.d, last);
   let exhaustionScore = 0;
   if (stochZone.isBuyZone || stochZone.isSellZone) {
-    exhaustionScore = Math.min(stochZone.strength * 0.15, 15);
+    exhaustionScore = Math.min(stochZone.strength * ENGINE_CONFIG.EXHAUSTION_SCORE_MULT, ENGINE_CONFIG.EXHAUSTION_SCORE_CAP);
   }
 
   // ════════════════════════════════════════════════════════════
   // LAYER 5: MOMENTUM — MACD Histogram
+  // v5.4 FIX: Skip early indices where histogram is unreliable
+  // (EMA26 needs 26 bars + signal EMA needs 9 more = 35 bars for valid data)
   // ════════════════════════════════════════════════════════════
 
-  const macdCrossed = (prevHistogram <= 0 && currentHistogram > 0) ||
-                      (prevHistogram >= 0 && currentHistogram < 0);
+  const macdReliable = last >= 35; // MACD valid only after bar 35
   let momentumScore = 0;
   let macdCrossSignal = "none";
   let macdDirection = 0;
 
-  if (macdCrossed) {
-    momentumScore = 15;
-    macdCrossSignal = currentHistogram > 0 ? "bullish_cross" : "bearish_cross";
-    macdDirection = currentHistogram > 0 ? 1 : -1;
-  } else {
-    momentumScore = Math.min(Math.abs(currentHistogram) * 200, 8);
-    macdCrossSignal = currentHistogram > 0 ? "bullish" : "bearish";
-    macdDirection = currentHistogram > 0 ? 1 : -1;
+  if (macdReliable) {
+    const macdCrossed = (prevHistogram <= 0 && currentHistogram > 0) ||
+                        (prevHistogram >= 0 && currentHistogram < 0);
+    if (macdCrossed) {
+      momentumScore = ENGINE_CONFIG.MOMENTUM_CROSS_SCORE;
+      macdCrossSignal = currentHistogram > 0 ? "bullish_cross" : "bearish_cross";
+      macdDirection = currentHistogram > 0 ? 1 : -1;
+    } else {
+      momentumScore = Math.min(Math.abs(currentHistogram) * ENGINE_CONFIG.MOMENTUM_HIST_MULT, ENGINE_CONFIG.MOMENTUM_HIST_CAP);
+      macdCrossSignal = currentHistogram > 0 ? "bullish" : "bearish";
+      macdDirection = currentHistogram > 0 ? 1 : -1;
+    }
   }
 
   // ════════════════════════════════════════════════════════════
@@ -545,23 +751,26 @@ export function analyzeSymbol(
   let rsiDirection = 0;
   let rsiHardLock: "BUY" | "SELL" | null = null;
 
-  // RSI chop detector
-  const rsiRecentRange = Math.max(...rsi.slice(-10)) - Math.min(...rsi.slice(-10));
-  const rsiIsChoppy = rsiRecentRange < 8 && currentRSI > 40 && currentRSI < 60;
+  // RSI chop detector: if recent RSI range is tiny and RSI is mid-range → indecisive
+  const rsiSlice = rsi.slice(Math.max(0, last - 9), last + 1);
+  const rsiRecentRange = Math.max(...rsiSlice) - Math.min(...rsiSlice);
+  const rsiIsChoppy = rsiRecentRange < ENGINE_CONFIG.RSI_CHOP_RANGE
+    && currentRSI > ENGINE_CONFIG.RSI_CHOP_LOW
+    && currentRSI < ENGINE_CONFIG.RSI_CHOP_HIGH;
 
-  if (currentRSI <= 15) {
+  if (currentRSI <= ENGINE_CONFIG.RSI_EXTREME_OVERSOLD) {
     rsiScore = 15; rsiSignal = "extreme_oversold"; rsiDirection = 1; rsiHardLock = "BUY";
-  } else if (currentRSI < 30) {
+  } else if (currentRSI < ENGINE_CONFIG.RSI_OVERSOLD) {
     rsiScore = 12; rsiSignal = "oversold"; rsiDirection = 1;
-  } else if (currentRSI >= 85) {
+  } else if (currentRSI >= ENGINE_CONFIG.RSI_EXTREME_OVERBOUGHT) {
     rsiScore = 15; rsiSignal = "extreme_overbought"; rsiDirection = -1; rsiHardLock = "SELL";
-  } else if (currentRSI > 70) {
+  } else if (currentRSI > ENGINE_CONFIG.RSI_OVERBOUGHT) {
     rsiScore = 12; rsiSignal = "overbought"; rsiDirection = -1;
   } else if (rsiIsChoppy) {
     rsiScore = 0; rsiSignal = "choppy"; rsiDirection = 0;
-  } else if (currentRSI < 45) {
+  } else if (currentRSI < ENGINE_CONFIG.RSI_LEANING_OVERSOLD) {
     rsiScore = 4; rsiSignal = "leaning_oversold"; rsiDirection = 1;
-  } else if (currentRSI > 55) {
+  } else if (currentRSI > ENGINE_CONFIG.RSI_LEANING_OVERBOUGHT) {
     rsiScore = 4; rsiSignal = "leaning_overbought"; rsiDirection = -1;
   } else {
     rsiScore = 0; rsiSignal = "neutral"; rsiDirection = 0;
@@ -571,100 +780,98 @@ export function analyzeSymbol(
   // LAYER 7: PATTERN + SMC
   // ════════════════════════════════════════════════════════════
 
-  const divergence = detectDivergence(prices, rsi);
-  const engulfing = detectEngulfing(prices, 10);
-  const smc = detectSMC(prices, times);
+  const divergence = detectDivergence(cleanPrices, rsi);
+  const engulfing = detectEngulfing(cleanPrices, 10);
+  const smc = detectSMC(cleanPrices, times);
 
   let patternBonus = 0;
   let patternDirection = 0;
 
-  // Engulfing — only counts in the right zone or with trend
+  // Engulfing — zone-aligned gets full weight, trend-only gets half
   if (engulfing) {
     const alignedWithZone =
       (engulfing.type === "bullish" && zone.inBuyZone) ||
       (engulfing.type === "bearish" && zone.inSellZone);
     if (alignedWithZone) {
-      patternBonus += Math.min(engulfing.strength * 0.12, 10);
+      patternBonus += Math.min(engulfing.strength * ENGINE_CONFIG.ENGULFING_ALIGNED_MULT, ENGINE_CONFIG.ENGULFING_ALIGNED_CAP);
       patternDirection = engulfing.type === "bullish" ? 1 : -1;
     } else if (
       (engulfing.type === "bullish" && trendUp) ||
       (engulfing.type === "bearish" && trendDown)
     ) {
-      patternBonus += Math.min(engulfing.strength * 0.06, 5);
+      patternBonus += Math.min(engulfing.strength * ENGINE_CONFIG.ENGULFING_TREND_MULT, ENGINE_CONFIG.ENGULFING_TREND_CAP);
       patternDirection = engulfing.type === "bullish" ? 1 : -1;
     }
   }
 
-  // Divergence — zone-aligned only
+  // Divergence — zone-aligned only (divergence without zone context is unreliable)
   if (divergence) {
     const divAligned =
       (divergence.type === "bullish" && zone.inBuyZone) ||
       (divergence.type === "bearish" && zone.inSellZone);
     if (divAligned) {
-      patternBonus += Math.min(divergence.strength * 0.10, 10);
+      patternBonus += Math.min(divergence.strength * ENGINE_CONFIG.DIVERGENCE_MULT, ENGINE_CONFIG.DIVERGENCE_CAP);
       if (patternDirection === 0) patternDirection = divergence.type === "bullish" ? 1 : -1;
     }
   }
 
-  // SMC bonus (v5.0)
+  // SMC bonus
   let smcScore = 0;
   if (smc.direction !== 0) {
-    smcScore = Math.min(smc.strength * 0.10, 10);
+    smcScore = Math.min(smc.strength * ENGINE_CONFIG.SMC_SCORE_MULT, ENGINE_CONFIG.SMC_SCORE_CAP);
   }
 
-  // Slope
-  const slopeScore = Math.min(Math.abs(currentSlope) * 40, 5);
+  // Slope (minor tiebreaker)
+  const slopeScore = Math.min(Math.abs(currentSlope) * ENGINE_CONFIG.SLOPE_MULT, ENGINE_CONFIG.SLOPE_CAP);
   const slopeDirection = currentSlope > 0 ? 1 : currentSlope < 0 ? -1 : 0;
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 8: QUANT MATH — Standard Deviation, Linear Regression, Z-Score (v5.2)
+  // LAYER 8: QUANT MATH — StdDev, Linear Regression, Z-Score
   // ════════════════════════════════════════════════════════════
 
   let quantScore = 0;
   let quantDirection = 0;
 
-  // Linear Regression: R² > 0.7 means strong trend, slope gives direction
-  if (currentR2 > 0.7) {
-    // Strong linear trend — trust it
+  // Linear Regression: R² > 0.7 = strong trend, slope gives direction
+  if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD) {
     quantDirection = currentLinRegSlope > 0 ? 1 : currentLinRegSlope < 0 ? -1 : 0;
-    quantScore += Math.min(currentR2 * 10, 8); // max 8 from R²
-  } else if (currentR2 < 0.3) {
-    // Weak trend (choppy) — penalty applied via noise gate
-    quantScore += 0;
+    quantScore += Math.min(currentR2 * 10, 8);
+  }
+  // R² < 0.3 = choppy (no bonus, handled by noise gate)
+
+  // Z-Score: >2σ from mean suggests mean-reversion
+  if (Math.abs(currentZScore) > ENGINE_CONFIG.ZSCORE_EXTREME) {
+    const zDir = currentZScore > 0 ? -1 : 1; // Sell above mean, Buy below
+    if (quantDirection === 0) {
+      quantDirection = zDir;
+    } else if (quantDirection === zDir) {
+      quantScore += ENGINE_CONFIG.ZSCORE_REINFORCE_BONUS;
+    } else {
+      // v5.4 FIX: clamp subtraction so quantScore never goes negative
+      quantScore = Math.max(0, quantScore - ENGINE_CONFIG.ZSCORE_CONFLICT_PENALTY);
+    }
   }
 
-  // Z-Score: extreme values indicate mean-reversion opportunity
-  if (Math.abs(currentZScore) > 2.0) {
-    // Price >2 std devs from mean → mean-reversion signal
-    const zDir = currentZScore > 0 ? -1 : 1; // Sell if above mean, Buy if below
-    if (quantDirection === 0) quantDirection = zDir;
-    else if (quantDirection === zDir) quantScore += 5; // Reinforces
-    else quantScore -= 3; // Conflicts
-  }
-
-  // Regression deviation: if price is far from regression line in trend direction
-  if (currentPrice > 0) {
+  // Regression deviation: price far from regression line in strong trend
+  if (currentPrice > 0 && currentR2 > ENGINE_CONFIG.R2_DEVIATION_THRESHOLD) {
     const devPct = Math.abs(currentLinRegDev) / currentPrice * 100;
-    if (devPct > 0.05 && currentR2 > 0.5) {
-      // Price deviating from strong trend line — possible snapback
-      const devDir = currentLinRegDev > 0 ? -1 : 1; // Above line → sell bias, below → buy bias
+    if (devPct > 0.05) {
+      const devDir = currentLinRegDev > 0 ? -1 : 1;
       if (devDir === quantDirection) quantScore += 3;
     }
   }
 
-  // Std Dev rate of change: increasing vol = breakout, decreasing = consolidation
-  if (last >= 5 && stdDev[last - 5] > 0) {
-    const stdDevChange = (currentStdDev - stdDev[last - 5]) / stdDev[last - 5];
-    if (stdDevChange > 0.3) {
-      // Volatility expanding — favor trend continuation
-      quantScore += 2;
-    } else if (stdDevChange < -0.3) {
-      // Volatility contracting — favor mean reversion
-      quantScore += 1;
+  // Std Dev rate of change: expanding vol = breakout, contracting = mean reversion
+  if (last >= 5 && safeNum(stdDev[last - 5]) > 0) {
+    const stdDevChange = (currentStdDev - safeNum(stdDev[last - 5])) / safeNum(stdDev[last - 5]);
+    if (stdDevChange > ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
+      quantScore += 2; // Volatility expanding — favor trend continuation
+    } else if (stdDevChange < -ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
+      quantScore += 1; // Volatility contracting — favor mean reversion
     }
   }
 
-  quantScore = Math.min(quantScore, 15);
+  quantScore = Math.min(Math.max(quantScore, 0), ENGINE_CONFIG.QUANT_SCORE_CAP);
 
   // ════════════════════════════════════════════════════════════
   // DIRECTIONAL DECISION — Weighted Layer Voting
@@ -706,69 +913,62 @@ export function analyzeSymbol(
   const dominantCount = rawType === "BUY" ? buyCount : sellCount;
 
   // ════════════════════════════════════════════════════════════
-  // HARD DIRECTIONAL GATES (v5.3 — MTF-aware, prevents false signals)
+  // HARD DIRECTIONAL GATES (v5.3+ — MTF-aware)
   // ════════════════════════════════════════════════════════════
-  //
-  // v5.3 FIX: Hard gates now CHECK MTF before forcing direction.
-  // Previously, gates would force BUY at support even when 15m trend was DOWN,
-  // then the MTF check would add a conflict penalty — producing weak false signals.
-  // Now gates only override when MTF is neutral or AGREES with the gate direction.
-  // Only RSI extreme hard-lock can override MTF (RSI < 15 or > 85).
 
   let conflictPenalty = 0;
   let type: "BUY" | "SELL" = rawType;
   let hardGateApplied = false;
 
-  // GATE 1: RSI Hard Lock — ONLY gate that can override MTF (extreme RSI = strongest signal)
+  // GATE 1: RSI Hard Lock — only gate that overrides MTF (extreme RSI = highest conviction)
   if (rsiHardLock) {
     if (rawType !== rsiHardLock) {
       type = rsiHardLock;
-      conflictPenalty += 10; // Reduced from 20: RSI extreme is high-conviction
+      conflictPenalty += ENGINE_CONFIG.PENALTY_RSI_HARDLOCK_OVERRIDE;
     } else {
       type = rsiHardLock;
     }
     hardGateApplied = true;
   }
 
-  // GATE 2: Deep Zone extreme + Stoch overbought = SELL (only if MTF doesn't strongly disagree)
-  // v5.3: Only triggers on DEEP zones (not near), and respects MTF
+  // GATE 2: Deep resistance + Stoch overbought = SELL (unless MTF strongly bullish)
   if (!rsiHardLock && zone.position === "deep_resistance" && stochZone.isSellZone) {
-    const mtfBlocksGate = htf.direction > 0 && htf.strength > 3; // 15m strongly bullish
+    const mtfBlocksGate = htf.direction > 0 && htf.strength > ENGINE_CONFIG.MTF_GATE_BLOCK_STRENGTH;
     if (type === "BUY" && !mtfBlocksGate) {
       type = "SELL";
-      conflictPenalty += 8;
+      conflictPenalty += ENGINE_CONFIG.PENALTY_DEEP_ZONE_GATE;
       hardGateApplied = true;
-      console.log(`[v5.3] HARD GATE: DeepResistance + Stoch(K:${stoch.k[last].toFixed(0)}) → SELL (MTF:${htf.direction === 0 ? "neutral" : "aligned"})`);
     }
   }
 
-  // GATE 3: Deep Zone extreme + Stoch oversold = BUY (only if MTF doesn't strongly disagree)
+  // GATE 3: Deep support + Stoch oversold = BUY (unless MTF strongly bearish)
   if (!rsiHardLock && zone.position === "deep_support" && stochZone.isBuyZone) {
-    const mtfBlocksGate = htf.direction < 0 && htf.strength > 3; // 15m strongly bearish
+    const mtfBlocksGate = htf.direction < 0 && htf.strength > ENGINE_CONFIG.MTF_GATE_BLOCK_STRENGTH;
     if (type === "SELL" && !mtfBlocksGate) {
       type = "BUY";
-      conflictPenalty += 8;
+      conflictPenalty += ENGINE_CONFIG.PENALTY_DEEP_ZONE_GATE;
       hardGateApplied = true;
-      console.log(`[v5.3] HARD GATE: DeepSupport + Stoch(K:${stoch.k[last].toFixed(0)}) → BUY (MTF:${htf.direction === 0 ? "neutral" : "aligned"})`);
     }
   }
 
-  // GATE 4: Extreme overbought (K > 95) at deep resistance — very high conviction
-  if (!rsiHardLock && stoch.k[last] > 95 && currentPercentB > 0.92 && type === "BUY") {
-    const mtfBlocksGate = htf.direction > 0 && htf.strength > 5;
+  // GATE 4: Extreme overbought (K > 95, %B > 0.92) — very high conviction
+  if (!rsiHardLock && safeNum(stoch.k[last]) > ENGINE_CONFIG.STOCH_EXTREME_HIGH
+      && currentPercentB > ENGINE_CONFIG.BB_GATE4_THRESHOLD && type === "BUY") {
+    const mtfBlocksGate = htf.direction > 0 && htf.strength > ENGINE_CONFIG.MTF_GATE_BLOCK_STRONG;
     if (!mtfBlocksGate) {
       type = "SELL";
-      conflictPenalty += 5;
+      conflictPenalty += ENGINE_CONFIG.PENALTY_EXTREME_STOCH_GATE;
       hardGateApplied = true;
     }
   }
 
-  // GATE 5: Extreme oversold (K < 5) at deep support — very high conviction
-  if (!rsiHardLock && stoch.k[last] < 5 && currentPercentB < 0.08 && type === "SELL") {
-    const mtfBlocksGate = htf.direction < 0 && htf.strength > 5;
+  // GATE 5: Extreme oversold (K < 5, %B < 0.08) — very high conviction
+  if (!rsiHardLock && safeNum(stoch.k[last]) < ENGINE_CONFIG.STOCH_EXTREME_LOW
+      && currentPercentB < ENGINE_CONFIG.BB_GATE5_THRESHOLD && type === "SELL") {
+    const mtfBlocksGate = htf.direction < 0 && htf.strength > ENGINE_CONFIG.MTF_GATE_BLOCK_STRONG;
     if (!mtfBlocksGate) {
       type = "BUY";
-      conflictPenalty += 5;
+      conflictPenalty += ENGINE_CONFIG.PENALTY_EXTREME_STOCH_GATE;
       hardGateApplied = true;
     }
   }
@@ -779,49 +979,50 @@ export function analyzeSymbol(
   if (trendConfirmed && (zone.inBuyZone || zone.inSellZone)) {
     const trendDir = trendUp ? 1 : -1;
     const zoneDir = zone.inBuyZone ? 1 : -1;
-    if (trendDir !== zoneDir) conflictPenalty += 5;
+    if (trendDir !== zoneDir) conflictPenalty += ENGINE_CONFIG.PENALTY_TREND_ZONE_CONFLICT;
   }
 
   // RSI vs Stoch conflict
   if (rsiDirection !== 0 && stochZone.direction !== 0 && rsiDirection !== stochZone.direction) {
-    conflictPenalty += 8;
+    conflictPenalty += ENGINE_CONFIG.PENALTY_RSI_STOCH_CONFLICT;
   }
 
   // MACD vs Trend conflict
   if (macdDirection !== 0 && trendConfirmed) {
     const trendDir = trendUp ? 1 : -1;
-    if (macdDirection !== trendDir) conflictPenalty += 5;
+    if (macdDirection !== trendDir) conflictPenalty += ENGINE_CONFIG.PENALTY_MACD_TREND_CONFLICT;
   }
 
   // EMA50 institutional bias conflict
   if (institutionalDirection !== 0) {
     const signalDir = type === "BUY" ? 1 : -1;
-    if (institutionalDirection !== signalDir) conflictPenalty += 10;
+    if (institutionalDirection !== signalDir) conflictPenalty += ENGINE_CONFIG.PENALTY_INSTITUTIONAL_CONFLICT;
   }
 
-  // MTF disagreement penalty (v5.3: proportional to HTF strength, not flat)
+  // MTF disagreement penalty (proportional to HTF strength)
   const mtfAligned = htf.direction === 0 || (type === "BUY" ? htf.direction > 0 : htf.direction < 0);
   if (htf.direction !== 0 && !mtfAligned) {
-    // Scale penalty by HTF strength: weak trend = small penalty, strong = heavy
-    const mtfPenalty = Math.min(Math.round(5 + htf.strength * 2), 20);
+    const mtfPenalty = Math.min(
+      Math.round(ENGINE_CONFIG.MTF_PENALTY_BASE + htf.strength * ENGINE_CONFIG.MTF_PENALTY_STRENGTH_MULT),
+      ENGINE_CONFIG.MTF_PENALTY_CAP
+    );
     conflictPenalty += mtfPenalty;
-    console.log(`[v5.3] MTF CONFLICT: 15min trend ${htf.direction > 0 ? "UP" : "DOWN"} vs signal ${type} (penalty:${mtfPenalty}, strength:${htf.strength.toFixed(1)})`);
   } else if (mtfAligned && htf.direction !== 0) {
-    mtfScore = Math.min(10 + Math.round(htf.strength), 15); // Proportional bonus
+    mtfScore = Math.min(ENGINE_CONFIG.MTF_ALIGNED_BONUS_BASE + Math.round(htf.strength), ENGINE_CONFIG.MTF_SCORE_CAP);
   }
 
-  // Quant conflict: R² strong but direction disagrees
-  if (currentR2 > 0.7 && quantDirection !== 0) {
+  // Quant conflict: R² strong but direction disagrees with signal
+  if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD && quantDirection !== 0) {
     const signalDir = type === "BUY" ? 1 : -1;
-    if (quantDirection !== signalDir) conflictPenalty += 7;
+    if (quantDirection !== signalDir) conflictPenalty += ENGINE_CONFIG.PENALTY_QUANT_R2_CONFLICT;
   }
 
   // Noise penalties
-  if (isNoisyMarket) conflictPenalty += 15;
-  if (rsiIsChoppy) conflictPenalty += 8;
+  if (isNoisyMarket) conflictPenalty += ENGINE_CONFIG.PENALTY_NOISY_MARKET;
+  if (rsiIsChoppy) conflictPenalty += ENGINE_CONFIG.PENALTY_RSI_CHOPPY;
 
   // ════════════════════════════════════════════════════════════
-  // COMPOSITE SCORE (v5.2 — linear additive with quant layer)
+  // COMPOSITE SCORE — linear additive with confluence adjustment
   // ════════════════════════════════════════════════════════════
 
   const rawScore = mtfScore + trendScore + zoneScore + exhaustionScore +
@@ -829,25 +1030,23 @@ export function analyzeSymbol(
 
   const penalizedScore = Math.max(rawScore - conflictPenalty, 0);
 
-  // Confluence boost: more agreement = higher confidence
+  // Confluence boost: more layers agreeing = higher confidence
   const confluenceRatio = totalWeight > 0 ? dominantWeight / totalWeight : 0.5;
   const totalScore = Math.min(Math.round(penalizedScore * (0.7 + 0.3 * confluenceRatio)), 100);
 
-  // v5.0: Confidence = score directly (no more multiplicative dilution)
   const confidence = totalScore;
 
   // ── Signal Grade ──
   let grade: "A" | "B" | "C" = "C";
-  if (layersPassed >= 5 && totalScore >= 60 && !isNoisyMarket && mtfAligned) {
+  if (layersPassed >= ENGINE_CONFIG.GRADE_A_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_A_MIN_SCORE && !isNoisyMarket && mtfAligned) {
     grade = "A";
-  } else if (layersPassed >= 3 && totalScore >= 40) {
+  } else if (layersPassed >= ENGINE_CONFIG.GRADE_B_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_B_MIN_SCORE) {
     grade = "B";
   }
 
   // ── Expectancy (Batista formula) ──
-  const estimatedWinRate = 0.45 + (totalScore / 100) * 0.25;
-  const payout = 0.85;
-  const expectancy = estimatedWinRate * payout - (1 - estimatedWinRate);
+  const estimatedWinRate = ENGINE_CONFIG.EXPECTANCY_BASE_WINRATE + (totalScore / 100) * ENGINE_CONFIG.EXPECTANCY_WINRATE_SCALE;
+  const expectancy = estimatedWinRate * ENGINE_CONFIG.PAYOUT_RATIO - (1 - estimatedWinRate);
 
   // ════════════════════════════════════════════════════════════
   // BUILD OUTPUT
@@ -857,22 +1056,20 @@ export function analyzeSymbol(
     ? Math.abs(buyWeight - sellWeight) / totalWeight * 100
     : 0;
 
-  // Pattern string
   const patterns: string[] = [];
   if (engulfing && patternBonus > 0) patterns.push(`${engulfing.type === "bullish" ? "BULLISH" : "BEARISH"} ENGULFING`);
   if (divergence && patternBonus > 0) patterns.push(`${divergence.type.toUpperCase()} DIVERGENCE`);
   if (emaCrossed) patterns.push("EMA CROSSOVER");
-  if (macdCrossed) patterns.push("MACD CROSSOVER");
+  if (macdReliable && macdCrossSignal.includes("cross")) patterns.push("MACD CROSSOVER");
   if (stochZone.hasCross) patterns.push("STOCH CROSSOVER");
   if (stochZone.isBuyZone || stochZone.isSellZone) patterns.push(`STOCH ${stochZone.isSellZone ? "OVERBOUGHT" : "OVERSOLD"}`);
-  if (currentPercentB <= 0.10 || currentPercentB >= 0.90) patterns.push("BB EXTREME");
+  if (currentPercentB <= ENGINE_CONFIG.BB_EXTREME_LOW || currentPercentB >= ENGINE_CONFIG.BB_EXTREME_HIGH) patterns.push("BB EXTREME");
   if (smc.description) patterns.push(`SMC: ${smc.description}`);
   if (hardGateApplied) patterns.push("HARD GATE APPLIED");
-  if (currentR2 > 0.7) patterns.push(`LINREG R²:${(currentR2 * 100).toFixed(0)}%`);
-  if (Math.abs(currentZScore) > 2.0) patterns.push(`ZSCORE:${currentZScore.toFixed(1)}`);
+  if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD) patterns.push(`LINREG R²:${(currentR2 * 100).toFixed(0)}%`);
+  if (Math.abs(currentZScore) > ENGINE_CONFIG.ZSCORE_EXTREME) patterns.push(`ZSCORE:${currentZScore.toFixed(1)}`);
   const pattern = patterns.length > 0 ? patterns.join(" + ") : null;
 
-  // Logic summary
   const logicParts: string[] = [];
   logicParts.push(`Grade:${grade}`);
   if (htf.direction !== 0) logicParts.push(`MTF:${htf.direction > 0 ? "↑" : "↓"}(${mtfAligned ? "✓" : "✗"})`);
@@ -882,9 +1079,9 @@ export function analyzeSymbol(
   else logicParts.push("Trend:⚠️");
   logicParts.push(`Zone:${zone.position}`);
   logicParts.push(`RSI:${currentRSI.toFixed(0)}`);
-  logicParts.push(`Stoch:${stoch.k[last].toFixed(0)}(${stochZone.signal})`);
+  logicParts.push(`Stoch:${safeNum(stoch.k[last]).toFixed(0)}(${stochZone.signal})`);
   logicParts.push(`${layersPassed}/${layers.length} layers`);
-  if (currentR2 > 0.5) logicParts.push(`R²:${(currentR2 * 100).toFixed(0)}%`);
+  if (currentR2 > ENGINE_CONFIG.R2_DEVIATION_THRESHOLD) logicParts.push(`R²:${(currentR2 * 100).toFixed(0)}%`);
   if (isNoisyMarket) logicParts.push(`Vol:${volState}`);
   if (smc.description) logicParts.push(`SMC:${smc.description}`);
   logicParts.push(expectancy > 0 ? `E+:${(expectancy * 100).toFixed(1)}%` : `E-:${(expectancy * 100).toFixed(1)}%`);
@@ -895,7 +1092,7 @@ export function analyzeSymbol(
     `RSI:${currentRSI.toFixed(1)}(${rsiSignal})`,
     `MACD:${macdCrossSignal}`,
     `BB:${zone.position}(${(currentPercentB * 100).toFixed(0)}%)`,
-    `Stoch:${stochZone.signal}(K:${stoch.k[last].toFixed(0)})`,
+    `Stoch:${stochZone.signal}(K:${safeNum(stoch.k[last]).toFixed(0)})`,
     `Vol:${volState}`,
     `ATR:${currentATR.toFixed(4)}`,
     htf.direction !== 0 ? `MTF:${htf.direction > 0 ? "↑" : "↓"}` : null,
@@ -914,9 +1111,9 @@ export function analyzeSymbol(
     logic,
     pattern,
     metrics: {
-      ema9: ema9[last],
-      ema21: ema21[last],
-      ema50: ema50[last],
+      ema9: ema9Last,
+      ema21: ema21Last,
+      ema50: ema50Last,
       ema_cross: emaDiff,
       ema_gap_pct: currentEMAGap,
       ema_slope: currentSlope,
@@ -933,8 +1130,8 @@ export function analyzeSymbol(
       bb_percentB: currentPercentB,
       bb_position: zone.position,
       bb_bandwidth: currentBandwidth,
-      stoch_k: stoch.k[last],
-      stoch_d: stoch.d[last],
+      stoch_k: safeNum(stoch.k[last]),
+      stoch_d: safeNum(stoch.d[last]),
       stoch_signal: stochZone.signal,
       confluence_count: dominantCount,
       confluence_required: 3,
@@ -945,7 +1142,6 @@ export function analyzeSymbol(
       htf_trend_15m: htf.htf15m.direction,
       mtf_aligned: mtfAligned,
       smc_signal: smc.description,
-      // v5.2 Quant Math metrics
       std_dev: currentStdDev,
       lin_reg_slope: currentLinRegSlope,
       lin_reg_r2: currentR2,
@@ -956,20 +1152,7 @@ export function analyzeSymbol(
   };
 }
 
-// ─── Signal Generator v5.3.1 — Adaptive Window ─────────────
-//
-// DESIGN: Instead of a fixed 5-minute fire-and-forget, the engine now uses
-// an "Adaptive Observation Window":
-//
-//   0–3 min : COOLDOWN — no scanning, prevents signal spam
-//   3–5 min : OBSERVATION WINDOW — scans every 30s, collects candidates
-//             • A-grade signal found → emit IMMEDIATELY (best opportunity)
-//             • B-grade signal found → hold as "best so far", keep scanning
-//   5 min   : DEADLINE — emit best candidate collected during window
-//             • If nothing found, log skip and reset for next window
-//
-// This ensures the engine never misses a high-quality signal that appears
-// at 3:20 or 4:10, while still having a maximum 5-minute ceiling.
+// ─── Signal Generator v5.4 — Adaptive Window ────────────────
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
@@ -984,9 +1167,6 @@ export class SignalGenerator {
   private consecutiveLosses = 0;
 
   // Adaptive window state
-  private readonly SCAN_INTERVAL_MS = 30 * 1000;       // Scan every 30s
-  private readonly WINDOW_OPEN_MS   = 3 * 60 * 1000;   // Window opens at 3 min
-  private readonly WINDOW_CLOSE_MS  = 5 * 60 * 1000;   // Deadline at 5 min
   private bestCandidate: SignalCandidate | null = null;
   private windowOpenedAt = 0;
   private scanCount = 0;
@@ -1020,7 +1200,7 @@ export class SignalGenerator {
     const analyses = await Promise.allSettled(
       this.activeSymbols.map(async (symbol) => {
         const history = await derivWs.getTickHistory(symbol, 5000);
-        if (!history?.prices || history.prices.length < 50) return null;
+        if (!history?.prices || history.prices.length < ENGINE_CONFIG.MIN_PRICES) return null;
 
         const prices = history.prices.map(Number);
         const times = history.times ? history.times.map(Number) : undefined;
@@ -1040,33 +1220,32 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.3.1] No symbols with sufficient data this scan");
+      console.log("[v5.4] No symbols with sufficient data this scan");
       return null;
     }
 
     // Emission gate: A and B grades only
     const qualityCandidates = candidates.filter(c => c.grade === "A" || c.grade === "B");
 
-    // After 3+ consecutive losses, require A-grade only
-    const minGrade = this.consecutiveLosses >= 3 ? "A" : "B";
-    const filteredCandidates = this.consecutiveLosses >= 3
+    // v5.4 FIX: After 3+ consecutive losses, STRICTLY require A-grade only
+    // (no fallback to B-grade — this is a protective filter)
+    const minGrade = this.consecutiveLosses >= ENGINE_CONFIG.LOSS_STREAK_A_ONLY ? "A" : "B";
+    const finalCandidates = minGrade === "A"
       ? qualityCandidates.filter(c => c.grade === "A")
       : qualityCandidates;
-
-    const finalCandidates = filteredCandidates.length > 0 ? filteredCandidates : qualityCandidates;
 
     if (finalCandidates.length === 0) {
       const aCount = candidates.filter(c => c.grade === "A").length;
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.3.1] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `[v5.4] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
         `Min grade: ${minGrade} | Losses: ${this.consecutiveLosses} — no quality signal`
       );
       return null;
     }
 
-    // Quality-first sorting
+    // Quality-first sorting: Grade > Expectancy > Confidence
     finalCandidates.sort((a, b) => {
       const gradeOrder = { A: 3, B: 2, C: 1 };
       const gradeDiff = gradeOrder[b.grade] - gradeOrder[a.grade];
@@ -1083,7 +1262,7 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.3.1] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+      `[v5.4] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
@@ -1100,7 +1279,6 @@ export class SignalGenerator {
     this.windowOpenedAt = 0;
     this.scanCount = 0;
 
-    // Worker ticks every 30s for adaptive scanning
     try {
       const workerScript = `
         let timerId = null;
@@ -1118,16 +1296,16 @@ export class SignalGenerator {
       const blob = new Blob([workerScript], { type: "application/javascript" });
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
-      this.worker.postMessage({ type: "start", interval: this.SCAN_INTERVAL_MS });
-      console.log(`[v5.3.1] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
+      this.worker.postMessage({ type: "start", interval: ENGINE_CONFIG.SCAN_INTERVAL_MS });
+      console.log(`[v5.4] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
     } catch (err) {
-      console.warn("[v5.3.1] Web Worker unavailable, using setInterval:", err);
-      this.fallbackTimerId = setInterval(() => this.tick(), this.SCAN_INTERVAL_MS);
+      console.warn("[v5.4] Web Worker unavailable, using setInterval:", err);
+      this.fallbackTimerId = setInterval(() => this.tick(), ENGINE_CONFIG.SCAN_INTERVAL_MS);
     }
 
-    console.log(`[v5.3.1] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
-    console.log(`[v5.3.1] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
-    console.log(`[v5.3.1] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak`);
+    console.log(`[v5.4] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
+    console.log(`[v5.4] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
+    console.log(`[v5.4] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak`);
   }
 
   stop() {
@@ -1143,7 +1321,7 @@ export class SignalGenerator {
     }
     this.bestCandidate = null;
     this.windowOpenedAt = 0;
-    console.log(`[v5.3.1] Signal Engine Stopped`);
+    console.log(`[v5.4] Signal Engine Stopped`);
   }
 
   private async tick() {
@@ -1153,9 +1331,9 @@ export class SignalGenerator {
     const elapsed = now - this.lastEmitTime;
 
     // ── COOLDOWN PHASE (0–3 min) ──
-    if (elapsed < this.WINDOW_OPEN_MS) {
-      const remaining = Math.round((this.WINDOW_OPEN_MS - elapsed) / 1000);
-      console.log(`[v5.3.1] Cooldown: ${remaining}s until observation window opens`);
+    if (elapsed < ENGINE_CONFIG.WINDOW_OPEN_MS) {
+      const remaining = Math.round((ENGINE_CONFIG.WINDOW_OPEN_MS - elapsed) / 1000);
+      console.log(`[v5.4] Cooldown: ${remaining}s until observation window opens`);
       return;
     }
 
@@ -1164,33 +1342,32 @@ export class SignalGenerator {
       this.windowOpenedAt = now;
       this.bestCandidate = null;
       this.scanCount = 0;
-      console.log(`[v5.3.1] ═══ Observation window OPENED ═══`);
+      console.log(`[v5.4] ═══ Observation window OPENED ═══`);
     }
 
     this.scanCount++;
     const windowElapsed = now - this.windowOpenedAt;
-    const isDeadline = elapsed >= this.WINDOW_CLOSE_MS;
+    const isDeadline = elapsed >= ENGINE_CONFIG.WINDOW_CLOSE_MS;
 
     try {
       const candidate = await this.generateSignal();
 
       if (candidate) {
-        // Compare with current best
         const isBetter = !this.bestCandidate || this.isBetterSignal(candidate, this.bestCandidate);
         if (isBetter) {
           const prev = this.bestCandidate;
           this.bestCandidate = candidate;
           console.log(
-            `[v5.3.1] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
+            `[v5.4] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
             `${candidate.type} [${candidate.grade}] score:${candidate.score}` +
             (prev ? ` (replaced ${prev.grade}:${prev.score})` : ` (first candidate)`)
           );
         }
 
-        // A-grade = instant emit (don't wait for deadline)
+        // A-grade = instant emit
         if (candidate.grade === "A" && isBetter) {
           console.log(
-            `[v5.3.1] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
+            `[v5.4] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
             `${SYMBOLS[candidate.symbol] || candidate.symbol} ${candidate.type} score:${candidate.score}`
           );
           this.emitSignal(this.bestCandidate!);
@@ -1202,32 +1379,30 @@ export class SignalGenerator {
       if (isDeadline) {
         if (this.bestCandidate) {
           console.log(
-            `[v5.3.1] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
+            `[v5.4] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
             `${SYMBOLS[this.bestCandidate.symbol] || this.bestCandidate.symbol} ` +
             `${this.bestCandidate.type} [${this.bestCandidate.grade}] score:${this.bestCandidate.score}`
           );
           this.emitSignal(this.bestCandidate);
         } else {
           console.log(
-            `[v5.3.1] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
+            `[v5.4] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
           );
-          // Reset window for next cycle
           this.bestCandidate = null;
           this.windowOpenedAt = 0;
           this.scanCount = 0;
-          // Set lastEmitTime so cooldown restarts
           this.lastEmitTime = now;
         }
       } else {
-        const timeLeft = Math.round((this.WINDOW_CLOSE_MS - elapsed) / 1000);
+        const timeLeft = Math.round((ENGINE_CONFIG.WINDOW_CLOSE_MS - elapsed) / 1000);
         console.log(
-          `[v5.3.1] Window scan #${this.scanCount} complete — ` +
+          `[v5.4] Window scan #${this.scanCount} complete — ` +
           `best: ${this.bestCandidate ? `${this.bestCandidate.grade}:${this.bestCandidate.score}` : "none"} | ` +
           `${timeLeft}s to deadline`
         );
       }
     } catch (err) {
-      console.error("[v5.3.1] Scan error:", err);
+      console.error("[v5.4] Scan error:", err);
     }
   }
 
@@ -1249,7 +1424,6 @@ export class SignalGenerator {
     if (gradeOrder[a.grade] !== gradeOrder[b.grade]) {
       return gradeOrder[a.grade] > gradeOrder[b.grade];
     }
-    // Same grade: prefer higher expectancy, then higher score
     if (Math.abs(a.metrics.expectancy - b.metrics.expectancy) > 0.01) {
       return a.metrics.expectancy > b.metrics.expectancy;
     }
