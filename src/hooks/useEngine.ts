@@ -169,7 +169,7 @@ export function useSignals() {
       setEngineRunning(false);
       toast.info("🔴 Signal Engine stopped — WebSocket disconnected");
     } else {
-      generator.start(5 * 60 * 1000);
+      generator.start();
       setEngineRunning(true);
       toast.success("🟢 Signal Engine started — WebSocket connected");
     }

@@ -956,20 +956,40 @@ export function analyzeSymbol(
   };
 }
 
-// ─── Signal Generator (v5.2) ────────────────────────────────
+// ─── Signal Generator v5.3.1 — Adaptive Window ─────────────
+//
+// DESIGN: Instead of a fixed 5-minute fire-and-forget, the engine now uses
+// an "Adaptive Observation Window":
+//
+//   0–3 min : COOLDOWN — no scanning, prevents signal spam
+//   3–5 min : OBSERVATION WINDOW — scans every 30s, collects candidates
+//             • A-grade signal found → emit IMMEDIATELY (best opportunity)
+//             • B-grade signal found → hold as "best so far", keep scanning
+//   5 min   : DEADLINE — emit best candidate collected during window
+//             • If nothing found, log skip and reset for next window
+//
+// This ensures the engine never misses a high-quality signal that appears
+// at 3:20 or 4:10, while still having a maximum 5-minute ceiling.
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
 export class SignalGenerator {
-  private intervalId: ReturnType<typeof setInterval> | null = null;
   private worker: Worker | null = null;
+  private fallbackTimerId: ReturnType<typeof setInterval> | null = null;
   private callbacks: SignalCallback[] = [];
   private activeSymbols: string[] = [];
   private running = false;
-  private lastSignalTime = 0;
-  private readonly MIN_INTERVAL_MS = 4 * 60 * 1000;
+  private lastEmitTime = 0;
   private recentGrades: string[] = [];
   private consecutiveLosses = 0;
+
+  // Adaptive window state
+  private readonly SCAN_INTERVAL_MS = 30 * 1000;       // Scan every 30s
+  private readonly WINDOW_OPEN_MS   = 3 * 60 * 1000;   // Window opens at 3 min
+  private readonly WINDOW_CLOSE_MS  = 5 * 60 * 1000;   // Deadline at 5 min
+  private bestCandidate: SignalCandidate | null = null;
+  private windowOpenedAt = 0;
+  private scanCount = 0;
 
   constructor(symbols: string[]) {
     this.activeSymbols = symbols;
@@ -1020,11 +1040,11 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.3] No symbols with sufficient data this cycle");
+      console.log("[v5.3.1] No symbols with sufficient data this scan");
       return null;
     }
 
-    // v5.0: EMISSION GATE — Only A and B grades
+    // Emission gate: A and B grades only
     const qualityCandidates = candidates.filter(c => c.grade === "A" || c.grade === "B");
 
     // After 3+ consecutive losses, require A-grade only
@@ -1040,8 +1060,8 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.3] NO QUALITY SIGNALS — ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
-        `Min grade required: ${minGrade} | Consecutive losses: ${this.consecutiveLosses} — SKIPPING CYCLE`
+        `[v5.3.1] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `Min grade: ${minGrade} | Losses: ${this.consecutiveLosses} — no quality signal`
       );
       return null;
     }
@@ -1063,25 +1083,24 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.3] ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C (${cCount} filtered out) | ` +
+      `[v5.3.1] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
-      `E:${(best.metrics.expectancy * 100).toFixed(1)}% | ` +
-      `Losses streak: ${this.consecutiveLosses}`
+      `E:${(best.metrics.expectancy * 100).toFixed(1)}%`
     );
-
-    this.recentGrades.push(best.grade);
-    if (this.recentGrades.length > 20) this.recentGrades.shift();
 
     return best;
   }
 
-  start(intervalMs = 5 * 60 * 1000) {
+  start() {
     if (this.running) return;
     this.running = true;
+    this.bestCandidate = null;
+    this.windowOpenedAt = 0;
+    this.scanCount = 0;
 
-    // Use Web Worker timer to prevent browser throttling in background tabs
+    // Worker ticks every 30s for adaptive scanning
     try {
       const workerScript = `
         let timerId = null;
@@ -1099,18 +1118,16 @@ export class SignalGenerator {
       const blob = new Blob([workerScript], { type: "application/javascript" });
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
-      this.worker.postMessage({ type: "start", interval: intervalMs });
-      console.log(`[v5.3] Signal Engine Started — Web Worker timer (background-safe)`);
+      this.worker.postMessage({ type: "start", interval: this.SCAN_INTERVAL_MS });
+      console.log(`[v5.3.1] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
     } catch (err) {
-      // Fallback to regular interval if Workers unavailable
-      console.warn("[v5.3] Web Worker unavailable, using setInterval (will throttle in background):", err);
-      this.intervalId = setInterval(() => this.tick(), intervalMs);
-      console.log(`[v5.3] Signal Engine Started — setInterval fallback`);
+      console.warn("[v5.3.1] Web Worker unavailable, using setInterval:", err);
+      this.fallbackTimerId = setInterval(() => this.tick(), this.SCAN_INTERVAL_MS);
     }
 
-    console.log(`[v5.3] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant(StdDev+LinReg+Z)`);
-    console.log(`[v5.3] Filters: Hard Gates + Noise Gate + RSI Chop + MTF(15m) Conflict + Quant R² + Loss Streak`);
-    console.log(`[v5.3] Emission: A/B grades only (C-grade suppressed) | Default: 15m TF + EMA(50)`);
+    console.log(`[v5.3.1] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
+    console.log(`[v5.3.1] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
+    console.log(`[v5.3.1] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak`);
   }
 
   stop() {
@@ -1120,31 +1137,123 @@ export class SignalGenerator {
       this.worker.terminate();
       this.worker = null;
     }
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
+    if (this.fallbackTimerId) {
+      clearInterval(this.fallbackTimerId);
+      this.fallbackTimerId = null;
     }
-    console.log(`[v5.3] Signal Engine Stopped`);
+    this.bestCandidate = null;
+    this.windowOpenedAt = 0;
+    console.log(`[v5.3.1] Signal Engine Stopped`);
   }
 
   private async tick() {
     if (!this.running) return;
+
+    const now = Date.now();
+    const elapsed = now - this.lastEmitTime;
+
+    // ── COOLDOWN PHASE (0–3 min) ──
+    if (elapsed < this.WINDOW_OPEN_MS) {
+      const remaining = Math.round((this.WINDOW_OPEN_MS - elapsed) / 1000);
+      console.log(`[v5.3.1] Cooldown: ${remaining}s until observation window opens`);
+      return;
+    }
+
+    // ── OBSERVATION WINDOW (3–5 min) ──
+    if (this.windowOpenedAt === 0) {
+      this.windowOpenedAt = now;
+      this.bestCandidate = null;
+      this.scanCount = 0;
+      console.log(`[v5.3.1] ═══ Observation window OPENED ═══`);
+    }
+
+    this.scanCount++;
+    const windowElapsed = now - this.windowOpenedAt;
+    const isDeadline = elapsed >= this.WINDOW_CLOSE_MS;
+
     try {
-      const now = Date.now();
-      const elapsed = now - this.lastSignalTime;
-      if (elapsed < this.MIN_INTERVAL_MS) {
-        console.log(`[v5.3] Skipping — ${Math.round(elapsed / 1000)}s since last (min ${this.MIN_INTERVAL_MS / 1000}s)`);
-        return;
+      const candidate = await this.generateSignal();
+
+      if (candidate) {
+        // Compare with current best
+        const isBetter = !this.bestCandidate || this.isBetterSignal(candidate, this.bestCandidate);
+        if (isBetter) {
+          const prev = this.bestCandidate;
+          this.bestCandidate = candidate;
+          console.log(
+            `[v5.3.1] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
+            `${candidate.type} [${candidate.grade}] score:${candidate.score}` +
+            (prev ? ` (replaced ${prev.grade}:${prev.score})` : ` (first candidate)`)
+          );
+        }
+
+        // A-grade = instant emit (don't wait for deadline)
+        if (candidate.grade === "A" && isBetter) {
+          console.log(
+            `[v5.3.1] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
+            `${SYMBOLS[candidate.symbol] || candidate.symbol} ${candidate.type} score:${candidate.score}`
+          );
+          this.emitSignal(this.bestCandidate!);
+          return;
+        }
       }
 
-      const signal = await this.generateSignal();
-      if (signal) {
-        this.lastSignalTime = Date.now();
-        this.callbacks.forEach((cb) => cb(signal));
+      // ── DEADLINE: emit best collected so far ──
+      if (isDeadline) {
+        if (this.bestCandidate) {
+          console.log(
+            `[v5.3.1] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
+            `${SYMBOLS[this.bestCandidate.symbol] || this.bestCandidate.symbol} ` +
+            `${this.bestCandidate.type} [${this.bestCandidate.grade}] score:${this.bestCandidate.score}`
+          );
+          this.emitSignal(this.bestCandidate);
+        } else {
+          console.log(
+            `[v5.3.1] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
+          );
+          // Reset window for next cycle
+          this.bestCandidate = null;
+          this.windowOpenedAt = 0;
+          this.scanCount = 0;
+          // Set lastEmitTime so cooldown restarts
+          this.lastEmitTime = now;
+        }
+      } else {
+        const timeLeft = Math.round((this.WINDOW_CLOSE_MS - elapsed) / 1000);
+        console.log(
+          `[v5.3.1] Window scan #${this.scanCount} complete — ` +
+          `best: ${this.bestCandidate ? `${this.bestCandidate.grade}:${this.bestCandidate.score}` : "none"} | ` +
+          `${timeLeft}s to deadline`
+        );
       }
     } catch (err) {
-      console.error("[v5.3] Tick error:", err);
+      console.error("[v5.3.1] Scan error:", err);
     }
+  }
+
+  private emitSignal(signal: SignalCandidate) {
+    this.lastEmitTime = Date.now();
+    this.bestCandidate = null;
+    this.windowOpenedAt = 0;
+    this.scanCount = 0;
+
+    this.recentGrades.push(signal.grade);
+    if (this.recentGrades.length > 20) this.recentGrades.shift();
+
+    this.callbacks.forEach((cb) => cb(signal));
+  }
+
+  /** Compare two candidates: returns true if `a` is strictly better than `b` */
+  private isBetterSignal(a: SignalCandidate, b: SignalCandidate): boolean {
+    const gradeOrder = { A: 3, B: 2, C: 1 };
+    if (gradeOrder[a.grade] !== gradeOrder[b.grade]) {
+      return gradeOrder[a.grade] > gradeOrder[b.grade];
+    }
+    // Same grade: prefer higher expectancy, then higher score
+    if (Math.abs(a.metrics.expectancy - b.metrics.expectancy) > 0.01) {
+      return a.metrics.expectancy > b.metrics.expectancy;
+    }
+    return a.score > b.score;
   }
 
   isRunning() {
