@@ -1,17 +1,17 @@
 /**
- * Signal Analysis Engine v5.4 — "Audit-Hardened" Edition
+ * Signal Analysis Engine v5.5 — "Quant Architect" Edition
  *
- * CHANGES FROM v5.3.1:
- * ─ All magic constants extracted into ENGINE_CONFIG for transparency
- * ─ FVG now checks middle candle (unfilled gap validation)
- * ─ BoS uses proper swing-point structure (HH/HL & LH/LL detection)
- * ─ quantScore floor clamped to 0 (was going negative on Z-Score conflict)
- * ─ Loss-streak filter no longer silently falls back to B-grade
- * ─ NaN guards on all indicator outputs and price data
- * ─ Engulfing/Divergence strength multipliers documented with rationale
- * ─ MACD histogram early-index false spikes prevented
- * ─ EMA50 graceful fallback when history is marginal
- * ─ All original layers, window timing, and architecture PRESERVED
+ * CHANGES FROM v5.4:
+ * ─ FIX 1: "Tick vs Time" — analyzeSymbol now builds 1-min candles from raw ticks
+ *   and feeds candle close prices to ALL indicators. Raw ticks only used for currentPrice.
+ * ─ FIX 2: MIN_HTF_TICKS raised to 3600 (~1hr of ticks) so 15m candles can actually form.
+ *   Added graceful fallback if history is shorter than needed.
+ * ─ FIX 3: MACD off-by-one fixed in indicators.ts (slice(25) + 25-zero padding).
+ * ─ FIX 4: FVG — removed redundant middle-candle check, standardized gap as c2.low > c0.high.
+ *   BoS — swing detection loop stops at `last - 2` to prevent "repainting".
+ * ─ FIX 5: Patterns (engulfing, divergence) now accept 1-min OHLC candles.
+ * ─ FIX 6: Loss-streak A-only has a 30-min/60-scan timeout to prevent engine lockup.
+ * ─ All original layers, Hard Gates, logging, variable names, and SignalCandidate format PRESERVED.
  *
  * ARCHITECTURE (unchanged):
  * ─ Layer 0: NOISE GATE — Volatility squeeze/extreme kills signals
@@ -41,7 +41,7 @@ import {
   calculateLinearRegression,
   calculateZScore,
 } from "./indicators";
-import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPattern } from "./patterns";
+import { detectDivergence, detectEngulfing, type Divergence, type EngulfingPattern, type PatternCandle } from "./patterns";
 
 // Re-export for backward compatibility
 export { calculateEMA, calculateRSI, calculateMACD, detectDivergence };
@@ -53,8 +53,9 @@ export { calculateEMA, calculateRSI, calculateMACD, detectDivergence };
 export const ENGINE_CONFIG = {
   // ── Minimum data requirements ──
   MIN_PRICES: 50,           // Minimum ticks for analysis
-  MIN_HTF_TICKS: 100,       // Minimum ticks for HTF computation
+  MIN_HTF_TICKS: 3600,      // v5.5 FIX: ~1 hour of ticks at 1t/s so 15m candles can form (was 100)
   MIN_HTF_CANDLES: 4,       // Minimum candles for HTF EMA
+  MIN_1M_CANDLES: 30,       // Minimum 1-min candles required for indicator math
 
   // ── EMA periods ──
   EMA_FAST: 9,
@@ -191,6 +192,7 @@ export const ENGINE_CONFIG = {
   WINDOW_OPEN_MS: 3 * 60 * 1000,
   WINDOW_CLOSE_MS: 5 * 60 * 1000,
   LOSS_STREAK_A_ONLY: 3,
+  LOSS_STREAK_TIMEOUT_SCANS: 60, // v5.5: After 60 scans (~30 min) of A-only, downgrade back to B
 } as const;
 
 // ─── NaN safety utility ─────────────────────────────────────
@@ -315,7 +317,11 @@ function getAdaptivePeriods(length: number, fastTarget: number, slowTarget: numb
 
 function computeHTFTrend(prices: number[], times: number[]): HTFResult {
   const result: HTFResult = { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
-  if (!times || times.length < ENGINE_CONFIG.MIN_HTF_TICKS) return result;
+
+  // v5.5 FIX: Graceful fallback — if we don't have MIN_HTF_TICKS, try with what we have
+  // but only if we have at least enough for a few 5m candles
+  const minForAny5m = 300 * ENGINE_CONFIG.MIN_HTF_CANDLES; // ~1200 ticks for 4x 5m candles
+  if (!times || times.length < minForAny5m) return result;
 
   // 5-min candles
   const candles5m = buildCandles(prices, times, 300);
@@ -336,6 +342,7 @@ function computeHTFTrend(prices: number[], times: number[]): HTFResult {
   }
 
   // 15-min candles (institutional noise filter)
+  // v5.5: Only attempt if we have enough ticks for at least MIN_HTF_CANDLES 15m candles
   const candles15m = buildCandles(prices, times, 900);
   if (candles15m.length >= ENGINE_CONFIG.MIN_HTF_CANDLES) {
     const closes = candles15m.map(c => c.close);
@@ -351,6 +358,9 @@ function computeHTFTrend(prices: number[], times: number[]): HTFResult {
       direction: emaDiff > 0 ? 1 : emaDiff < 0 ? -1 : 0,
       strength: safeNum(closes[last]) > 0 ? Math.abs(emaDiff) / closes[last] * 10000 + emaSlope : 0,
     };
+  } else {
+    // v5.5 FALLBACK: Not enough data for 15m — log and proceed with 5m only
+    console.log(`[v5.5] HTF 15m: only ${candles15m.length} candles (need ${ENGINE_CONFIG.MIN_HTF_CANDLES}) — using 5m only`);
   }
 
   // Combined: 15m priority (institutional), 5m confirms
@@ -470,7 +480,7 @@ function detectStochZone(k: number[], d: number[], last: number): StochZone {
   return { isBuyZone: false, isSellZone: false, hasCross: false, strength: 0, signal: "neutral", direction: 0 };
 }
 
-// ─── Smart Money Concepts (v5.4 — proper FVG + BoS) ─────────
+// ─── Smart Money Concepts (v5.5 — standardized FVG + anti-repaint BoS) ──
 
 interface SMCResult {
   fvg: "bullish" | "bearish" | null;
@@ -480,67 +490,58 @@ interface SMCResult {
   description: string | null;
 }
 
-function detectSMC(prices: number[], times?: number[]): SMCResult {
+function detectSMC(candles: Candle[]): SMCResult {
   const result: SMCResult = { fvg: null, bos: null, direction: 0, strength: 0, description: null };
 
-  if (!times || prices.length < ENGINE_CONFIG.MIN_HTF_TICKS) return result;
-
-  const candles = buildCandles(prices, times, 60);
   if (candles.length < 10) return result;
 
   const last = candles.length - 1;
 
-  // ── Fair Value Gap Detection (v5.4 FIX: checks middle candle) ──
-  // Bullish FVG: candle[i-2].high < candle[i].low AND middle candle didn't fill the gap
-  // This means the gap between c0.high and c2.low was NOT covered by c1's range
+  // ── Fair Value Gap Detection (v5.5 FIX: standardized gap logic) ──
+  // Bullish FVG: gap between c0.high and c2.low — price jumped up leaving an unfilled void
+  // Bearish FVG: gap between c0.low and c2.high — price dropped leaving an unfilled void
+  // v5.5: Removed redundant c1 fill check. The standard FVG definition is:
+  //   Bullish: c2.low > c0.high (gap exists between candle 0's high and candle 2's low)
+  //   Bearish: c2.high < c0.low (gap exists between candle 0's low and candle 2's high)
   if (last >= 2) {
     const c0 = candles[last - 2]; // oldest
-    const c1 = candles[last - 1]; // middle — must NOT fill the gap
     const c2 = candles[last];     // newest
 
     if (c2.low > c0.high) {
-      // Potential bullish FVG gap exists
-      // v5.4: Validate gap is UNFILLED — middle candle's low must be above c0.high
-      // (if c1 dipped into the gap, the FVG is filled/invalid)
-      const gapUnfilled = c1.low >= c0.high;
-      if (gapUnfilled) {
-        const gapSize = c2.low - c0.high;
-        const avgPrice = (c0.close + c2.close) / 2;
-        const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
-        if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
-          result.fvg = "bullish";
-          result.direction += 1;
-          result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
-        }
+      // Bullish FVG: price gapped up
+      const gapSize = c2.low - c0.high;
+      const avgPrice = (c0.close + c2.close) / 2;
+      const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
+      if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
+        result.fvg = "bullish";
+        result.direction += 1;
+        result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
       }
     } else if (c2.high < c0.low) {
-      // Potential bearish FVG
-      // v5.4: Middle candle's high must be below c0.low (gap unfilled)
-      const gapUnfilled = c1.high <= c0.low;
-      if (gapUnfilled) {
-        const gapSize = c0.low - c2.high;
-        const avgPrice = (c0.close + c2.close) / 2;
-        const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
-        if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
-          result.fvg = "bearish";
-          result.direction -= 1;
-          result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
-        }
+      // Bearish FVG: price gapped down
+      const gapSize = c0.low - c2.high;
+      const avgPrice = (c0.close + c2.close) / 2;
+      const gapPct = avgPrice > 0 ? (gapSize / avgPrice) * 100 : 0;
+      if (gapPct > ENGINE_CONFIG.FVG_MIN_GAP_PCT) {
+        result.fvg = "bearish";
+        result.direction -= 1;
+        result.strength += Math.min(gapPct * ENGINE_CONFIG.FVG_STRENGTH_MULT, ENGINE_CONFIG.FVG_STRENGTH_CAP);
       }
     }
   }
 
-  // ── Break of Structure (v5.4 FIX: proper swing-point detection) ──
-  // Instead of simple breakout, detect swing highs/lows and check for
-  // structural break: HH after HL = bullish BoS, LL after LH = bearish BoS
+  // ── Break of Structure (v5.5 FIX: anti-repaint — loop stops at last-2) ──
+  // The current forming candle (last) cannot declare a swing point.
+  // Swing detection stops at `last - 2` so only confirmed bars participate.
   if (last >= 8) {
     const lookback = Math.min(ENGINE_CONFIG.BOS_LOOKBACK, last - 3);
 
-    // Find the two most recent swing highs and swing lows
     const swingHighs: { idx: number; price: number }[] = [];
     const swingLows: { idx: number; price: number }[] = [];
 
-    for (let i = last - lookback * 2; i <= last - 1; i++) {
+    // v5.5 FIX: Stop at last - 2 to prevent repainting (current candle can't be a confirmed swing)
+    const scanEnd = last - 2;
+    for (let i = last - lookback * 2; i <= scanEnd; i++) {
       if (i < 1 || i >= candles.length - 1) continue;
       // Swing high: higher than both neighbors
       if (candles[i].high > candles[i - 1].high && candles[i].high > candles[i + 1].high) {
@@ -592,7 +593,7 @@ function detectSMC(prices: number[], times?: number[]): SMCResult {
 }
 
 // ═════════════════════════════════════════════════════════════
-// MAIN ANALYSIS FUNCTION (v5.4)
+// MAIN ANALYSIS FUNCTION (v5.5)
 // ═════════════════════════════════════════════════════════════
 
 export function analyzeSymbol(
@@ -603,28 +604,50 @@ export function analyzeSymbol(
 
   // ── Sanitize input (NaN guard) ──
   const cleanPrices = sanitizePrices(prices);
+  const cleanTimes = times ? times.map(t => Number.isFinite(t) ? t : 0) : undefined;
 
-  // ── Compute all 1-min indicators ──
-  const ema9 = calculateEMA(cleanPrices, ENGINE_CONFIG.EMA_FAST);
-  const ema21 = calculateEMA(cleanPrices, ENGINE_CONFIG.EMA_SLOW);
+  // ── v5.5 FIX 1: Build 1-minute candles from ticks ──
+  // ALL indicators now operate on candle close prices (time-based), NOT raw tick arrays.
+  // Raw ticks are only used for currentPrice (execution reference).
+  let candles1m: Candle[] = [];
+  let candleCloses: number[];
+
+  if (cleanTimes && cleanTimes.length === cleanPrices.length) {
+    candles1m = buildCandles(cleanPrices, cleanTimes, 60);
+    candleCloses = candles1m.map(c => c.close);
+  } else {
+    // Fallback: if no timestamps available, use raw prices (degraded mode)
+    candleCloses = cleanPrices;
+  }
+
+  // Need minimum candles for indicator math
+  if (candleCloses.length < ENGINE_CONFIG.MIN_1M_CANDLES) {
+    console.log(`[v5.5] Insufficient 1m candles: ${candleCloses.length} (need ${ENGINE_CONFIG.MIN_1M_CANDLES})`);
+    return null;
+  }
+
+  // ── Compute all indicators on 1-minute candle closes ──
+  const ema9 = calculateEMA(candleCloses, ENGINE_CONFIG.EMA_FAST);
+  const ema21 = calculateEMA(candleCloses, ENGINE_CONFIG.EMA_SLOW);
   // EMA50: graceful fallback — need at least period+1 valid data points
-  const ema50Period = cleanPrices.length > ENGINE_CONFIG.EMA_INSTITUTIONAL + 1
+  const ema50Period = candleCloses.length > ENGINE_CONFIG.EMA_INSTITUTIONAL + 1
     ? ENGINE_CONFIG.EMA_INSTITUTIONAL
-    : Math.max(2, Math.floor(cleanPrices.length * 0.6));
-  const ema50 = calculateEMA(cleanPrices, ema50Period);
-  const rsi = calculateRSI(cleanPrices, 14);
-  const { histogram } = calculateMACD(cleanPrices);
-  const atr = calculateATR(cleanPrices, 14);
+    : Math.max(2, Math.floor(candleCloses.length * 0.6));
+  const ema50 = calculateEMA(candleCloses, ema50Period);
+  const rsi = calculateRSI(candleCloses, 14);
+  const { histogram } = calculateMACD(candleCloses);
+  const atr = calculateATR(candleCloses, 14);
   const slope = calculateEMASlope(ema9, 5);
-  const emaGap = calculateEMAGap(ema9, ema21, cleanPrices);
-  const bb = calculateBollingerBands(cleanPrices, 20, 2);
-  const stoch = calculateStochastic(cleanPrices, 14, 3);
-  const stdDev = calculateStdDev(cleanPrices, 20);
-  const linReg = calculateLinearRegression(cleanPrices, 20);
-  const zScore = calculateZScore(cleanPrices, 20);
+  const emaGap = calculateEMAGap(ema9, ema21, candleCloses);
+  const bb = calculateBollingerBands(candleCloses, 20, 2);
+  const stoch = calculateStochastic(candleCloses, 14, 3);
+  const stdDev = calculateStdDev(candleCloses, 20);
+  const linReg = calculateLinearRegression(candleCloses, 20);
+  const zScore = calculateZScore(candleCloses, 20);
 
-  const last = cleanPrices.length - 1;
-  const currentPrice = safeNum(cleanPrices[last]);
+  const last = candleCloses.length - 1;
+  // v5.5: currentPrice from raw tick data (most recent tick) for execution accuracy
+  const currentPrice = safeNum(cleanPrices[cleanPrices.length - 1]);
   if (currentPrice === 0) return null; // No valid price
 
   const currentRSI = safeNum(rsi[last], 50);
@@ -646,20 +669,20 @@ export function analyzeSymbol(
   // LAYER 0: NOISE GATE — Volatility Filter
   // ════════════════════════════════════════════════════════════
 
-  const volState = classifyVolatility(bb.bandwidth, atr, cleanPrices, last);
+  const volState = classifyVolatility(bb.bandwidth, atr, candleCloses, last);
   const isNoisyMarket = volState === "squeeze" || volState === "extreme";
 
   // ════════════════════════════════════════════════════════════
   // LAYER 1: MTF TREND — 5m+15m candle direction
   // ════════════════════════════════════════════════════════════
 
-  const htf: HTFResult = times
-    ? computeHTFTrend(cleanPrices, times)
+  const htf: HTFResult = cleanTimes
+    ? computeHTFTrend(cleanPrices, cleanTimes)
     : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
   let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * ENGINE_CONFIG.MTF_STRENGTH_MULT, ENGINE_CONFIG.MTF_SCORE_CAP) : 0;
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 2: TREND — EMA9 vs EMA21 (1-min)
+  // LAYER 2: TREND — EMA9 vs EMA21 (1-min candle closes)
   // ════════════════════════════════════════════════════════════
 
   const ema9Last = safeNum(ema9[last]);
@@ -720,10 +743,11 @@ export function analyzeSymbol(
   // ════════════════════════════════════════════════════════════
   // LAYER 5: MOMENTUM — MACD Histogram
   // v5.4 FIX: Skip early indices where histogram is unreliable
-  // (EMA26 needs 26 bars + signal EMA needs 9 more = 35 bars for valid data)
+  // (EMA26 needs 25 bars + signal EMA needs 9 more = 34 bars for valid data)
+  // v5.5: Updated threshold from 35 to 34 to match corrected MACD alignment
   // ════════════════════════════════════════════════════════════
 
-  const macdReliable = last >= 35; // MACD valid only after bar 35
+  const macdReliable = last >= 34; // MACD valid only after bar 34 (25+9)
   let momentumScore = 0;
   let macdCrossSignal = "none";
   let macdDirection = 0;
@@ -778,11 +802,20 @@ export function analyzeSymbol(
 
   // ════════════════════════════════════════════════════════════
   // LAYER 7: PATTERN + SMC
+  // v5.5: Patterns now use 1-min OHLC candles instead of raw ticks
   // ════════════════════════════════════════════════════════════
 
-  const divergence = detectDivergence(cleanPrices, rsi);
-  const engulfing = detectEngulfing(cleanPrices, 10);
-  const smc = detectSMC(cleanPrices, times);
+  // v5.5 FIX 5: Pass candle closes and RSI to divergence (time-based, not tick-based)
+  const divergence = detectDivergence(candleCloses, rsi);
+
+  // v5.5 FIX 5: Pass 1-min OHLC candle array to engulfing (proper candlestick logic)
+  const patternCandles: PatternCandle[] = candles1m.map(c => ({
+    open: c.open, high: c.high, low: c.low, close: c.close,
+  }));
+  const engulfing = patternCandles.length >= 2 ? detectEngulfing(patternCandles) : null;
+
+  // SMC uses the same 1-min candles
+  const smc = detectSMC(candles1m);
 
   let patternBonus = 0;
   let patternDirection = 0;
@@ -1152,7 +1185,7 @@ export function analyzeSymbol(
   };
 }
 
-// ─── Signal Generator v5.4 — Adaptive Window ────────────────
+// ─── Signal Generator v5.5 — Adaptive Window + Loss-Streak Timeout ──
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
@@ -1171,6 +1204,10 @@ export class SignalGenerator {
   private windowOpenedAt = 0;
   private scanCount = 0;
 
+  // v5.5 FIX 6: Loss-streak A-only timeout tracking
+  private lossStreakStartedAt = 0;      // Timestamp when A-only mode was entered
+  private lossStreakScanCount = 0;      // Number of scans since A-only mode started
+
   constructor(symbols: string[]) {
     this.activeSymbols = symbols;
   }
@@ -1187,8 +1224,16 @@ export class SignalGenerator {
   reportTradeResult(isWin: boolean) {
     if (isWin) {
       this.consecutiveLosses = 0;
+      this.lossStreakStartedAt = 0;
+      this.lossStreakScanCount = 0;
     } else {
       this.consecutiveLosses++;
+      // Start tracking A-only timeout when we first enter A-only mode
+      if (this.consecutiveLosses >= ENGINE_CONFIG.LOSS_STREAK_A_ONLY && this.lossStreakStartedAt === 0) {
+        this.lossStreakStartedAt = Date.now();
+        this.lossStreakScanCount = 0;
+        console.log(`[v5.5] Loss streak ${this.consecutiveLosses} — entering A-ONLY mode (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans)`);
+      }
     }
   }
 
@@ -1220,16 +1265,35 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.4] No symbols with sufficient data this scan");
+      console.log("[v5.5] No symbols with sufficient data this scan");
       return null;
     }
 
     // Emission gate: A and B grades only
     const qualityCandidates = candidates.filter(c => c.grade === "A" || c.grade === "B");
 
-    // v5.4 FIX: After 3+ consecutive losses, STRICTLY require A-grade only
-    // (no fallback to B-grade — this is a protective filter)
-    const minGrade = this.consecutiveLosses >= ENGINE_CONFIG.LOSS_STREAK_A_ONLY ? "A" : "B";
+    // v5.5 FIX 6: Loss-streak A-only with timeout
+    // After LOSS_STREAK_A_ONLY consecutive losses, require A-grade only
+    // BUT after LOSS_STREAK_TIMEOUT_SCANS scans (~30 min), gracefully downgrade back to B
+    let minGrade: "A" | "B" = "B";
+    if (this.consecutiveLosses >= ENGINE_CONFIG.LOSS_STREAK_A_ONLY) {
+      this.lossStreakScanCount++;
+
+      if (this.lossStreakScanCount > ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS) {
+        // Timeout reached — downgrade back to accepting B-grades
+        minGrade = "B";
+        console.log(
+          `[v5.5] Loss-streak A-only TIMEOUT after ${this.lossStreakScanCount} scans — ` +
+          `accepting B-grades again (losses: ${this.consecutiveLosses})`
+        );
+        // Reset timeout tracking but keep loss count (will re-enter A-only if another loss occurs)
+        this.lossStreakStartedAt = 0;
+        this.lossStreakScanCount = 0;
+      } else {
+        minGrade = "A";
+      }
+    }
+
     const finalCandidates = minGrade === "A"
       ? qualityCandidates.filter(c => c.grade === "A")
       : qualityCandidates;
@@ -1239,8 +1303,10 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.4] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
-        `Min grade: ${minGrade} | Losses: ${this.consecutiveLosses} — no quality signal`
+        `[v5.5] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `Min grade: ${minGrade} | Losses: ${this.consecutiveLosses} ` +
+        (minGrade === "A" ? `(A-only scan ${this.lossStreakScanCount}/${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS}) ` : "") +
+        `— no quality signal`
       );
       return null;
     }
@@ -1262,7 +1328,7 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.4] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+      `[v5.5] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
@@ -1297,15 +1363,16 @@ export class SignalGenerator {
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
       this.worker.postMessage({ type: "start", interval: ENGINE_CONFIG.SCAN_INTERVAL_MS });
-      console.log(`[v5.4] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
+      console.log(`[v5.5] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
     } catch (err) {
-      console.warn("[v5.4] Web Worker unavailable, using setInterval:", err);
+      console.warn("[v5.5] Web Worker unavailable, using setInterval:", err);
       this.fallbackTimerId = setInterval(() => this.tick(), ENGINE_CONFIG.SCAN_INTERVAL_MS);
     }
 
-    console.log(`[v5.4] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
-    console.log(`[v5.4] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
-    console.log(`[v5.4] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak`);
+    console.log(`[v5.5] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
+    console.log(`[v5.5] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
+    console.log(`[v5.5] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans)`);
+    console.log(`[v5.5] FIX: Indicators now use 1-min candle closes (not raw ticks) | MIN_HTF_TICKS: ${ENGINE_CONFIG.MIN_HTF_TICKS}`);
   }
 
   stop() {
@@ -1321,7 +1388,7 @@ export class SignalGenerator {
     }
     this.bestCandidate = null;
     this.windowOpenedAt = 0;
-    console.log(`[v5.4] Signal Engine Stopped`);
+    console.log(`[v5.5] Signal Engine Stopped`);
   }
 
   private async tick() {
@@ -1333,7 +1400,7 @@ export class SignalGenerator {
     // ── COOLDOWN PHASE (0–3 min) ──
     if (elapsed < ENGINE_CONFIG.WINDOW_OPEN_MS) {
       const remaining = Math.round((ENGINE_CONFIG.WINDOW_OPEN_MS - elapsed) / 1000);
-      console.log(`[v5.4] Cooldown: ${remaining}s until observation window opens`);
+      console.log(`[v5.5] Cooldown: ${remaining}s until observation window opens`);
       return;
     }
 
@@ -1342,7 +1409,7 @@ export class SignalGenerator {
       this.windowOpenedAt = now;
       this.bestCandidate = null;
       this.scanCount = 0;
-      console.log(`[v5.4] ═══ Observation window OPENED ═══`);
+      console.log(`[v5.5] ═══ Observation window OPENED ═══`);
     }
 
     this.scanCount++;
@@ -1358,7 +1425,7 @@ export class SignalGenerator {
           const prev = this.bestCandidate;
           this.bestCandidate = candidate;
           console.log(
-            `[v5.4] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
+            `[v5.5] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
             `${candidate.type} [${candidate.grade}] score:${candidate.score}` +
             (prev ? ` (replaced ${prev.grade}:${prev.score})` : ` (first candidate)`)
           );
@@ -1367,7 +1434,7 @@ export class SignalGenerator {
         // A-grade = instant emit
         if (candidate.grade === "A" && isBetter) {
           console.log(
-            `[v5.4] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
+            `[v5.5] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
             `${SYMBOLS[candidate.symbol] || candidate.symbol} ${candidate.type} score:${candidate.score}`
           );
           this.emitSignal(this.bestCandidate!);
@@ -1379,14 +1446,14 @@ export class SignalGenerator {
       if (isDeadline) {
         if (this.bestCandidate) {
           console.log(
-            `[v5.4] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
+            `[v5.5] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
             `${SYMBOLS[this.bestCandidate.symbol] || this.bestCandidate.symbol} ` +
             `${this.bestCandidate.type} [${this.bestCandidate.grade}] score:${this.bestCandidate.score}`
           );
           this.emitSignal(this.bestCandidate);
         } else {
           console.log(
-            `[v5.4] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
+            `[v5.5] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
           );
           this.bestCandidate = null;
           this.windowOpenedAt = 0;
@@ -1396,13 +1463,13 @@ export class SignalGenerator {
       } else {
         const timeLeft = Math.round((ENGINE_CONFIG.WINDOW_CLOSE_MS - elapsed) / 1000);
         console.log(
-          `[v5.4] Window scan #${this.scanCount} complete — ` +
+          `[v5.5] Window scan #${this.scanCount} complete — ` +
           `best: ${this.bestCandidate ? `${this.bestCandidate.grade}:${this.bestCandidate.score}` : "none"} | ` +
           `${timeLeft}s to deadline`
         );
       }
     } catch (err) {
-      console.error("[v5.4] Scan error:", err);
+      console.error("[v5.5] Scan error:", err);
     }
   }
 
