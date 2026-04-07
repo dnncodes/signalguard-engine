@@ -1,10 +1,10 @@
 /**
- * Technical Indicators Module v3.1
+ * Technical Indicators Module v3.2
  * 
  * Pure functions for calculating trading indicators:
  * - EMA (Exponential Moving Average)
  * - RSI (Relative Strength Index) — Wilder smoothing
- * - MACD (Moving Average Convergence Divergence)
+ * - MACD (Moving Average Convergence Divergence) — v3.2 FIX: off-by-one alignment
  * - ATR (Average True Range)
  * - EMA Slope (trend momentum)
  * - EMA Gap (percentage distance between two EMAs)
@@ -56,6 +56,9 @@ export function calculateRSI(prices: number[], period = 14): number[] {
 }
 
 // ─── MACD ────────────────────────────────────────────────────
+// v3.2 FIX: Off-by-one alignment correction.
+// EMA26 is first valid at index 25 (0-indexed), so we slice(25) not slice(26).
+// Signal line padding uses 25 zeros to perfectly align with the MACD array.
 
 export function calculateMACD(prices: number[]): {
   macd: number[];
@@ -65,8 +68,14 @@ export function calculateMACD(prices: number[]): {
   const ema12 = calculateEMA(prices, 12);
   const ema26 = calculateEMA(prices, 26);
   const macd = prices.map((_, i) => ema12[i] - ema26[i]);
-  const signal = calculateEMA(macd.slice(26), 9);
-  const paddedSignal = new Array(26).fill(0).concat(signal);
+
+  // v3.2 FIX: EMA26 first valid at index 25 (0-indexed), so MACD is valid from index 25
+  const validMacd = macd.slice(25);
+  const signal = calculateEMA(validMacd, 9);
+
+  // Pad with 25 zeros to re-align signal array with the full MACD array
+  const paddedSignal = new Array(25).fill(0).concat(signal);
+
   const histogram = macd.map((v, i) => v - (paddedSignal[i] || 0));
   return { macd, signal: paddedSignal, histogram };
 }
