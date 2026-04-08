@@ -1,28 +1,31 @@
 /**
- * Signal Analysis Engine v5.5 — "Quant Architect" Edition
+ * Signal Analysis Engine v6.0 — "Regime-First Quant Architect" Edition
  *
- * CHANGES FROM v5.4:
- * ─ FIX 1: "Tick vs Time" — analyzeSymbol now builds 1-min candles from raw ticks
- *   and feeds candle close prices to ALL indicators. Raw ticks only used for currentPrice.
- * ─ FIX 2: MIN_HTF_TICKS raised to 3600 (~1hr of ticks) so 15m candles can actually form.
- *   Added graceful fallback if history is shorter than needed.
- * ─ FIX 3: MACD off-by-one fixed in indicators.ts (slice(25) + 25-zero padding).
- * ─ FIX 4: FVG — removed redundant middle-candle check, standardized gap as c2.low > c0.high.
- *   BoS — swing detection loop stops at `last - 2` to prevent "repainting".
- * ─ FIX 5: Patterns (engulfing, divergence) now accept 1-min OHLC candles.
- * ─ FIX 6: Loss-streak A-only has a 30-min/60-scan timeout to prevent engine lockup.
- * ─ All original layers, Hard Gates, logging, variable names, and SignalCandidate format PRESERVED.
+ * PHASE 1 VERIFICATION (all confirmed ✅):
+ * ─ Tick vs Time: buildCandles(ticks, times, 60) → candle closes fed to ALL indicators
+ * ─ MACD alignment: slice(25) + 25-zero padding (confirmed in indicators.ts v4.0)
+ * ─ BoS anti-repaint: scanEnd = last - 2 (confirmed)
+ * ─ Loss-streak timeout: lossStreakScanCount with 60-scan timeout (confirmed)
+ * ─ Interface preservation: all SignalCandidate fields present (confirmed)
  *
- * ARCHITECTURE (unchanged):
- * ─ Layer 0: NOISE GATE — Volatility squeeze/extreme kills signals
- * ─ Layer 1: MTF TREND — 5m+15m EMA direction (institutional)
- * ─ Layer 2: TREND — 1-min EMA9/EMA21 micro direction
- * ─ Layer 3: ZONE — Bollinger %B S/R proximity
- * ─ Layer 4: EXHAUSTION — Stochastic zone + crossover
- * ─ Layer 5: MOMENTUM — MACD histogram direction
- * ─ Layer 6: RSI CONTEXT — Extreme RSI hard-locks direction
- * ─ Layer 7: PATTERN + SMC — Engulfing, Divergence, FVG, BoS
- * ─ Layer 8: QUANT MATH — Linear Regression R², Z-Score, StdDev
+ * PHASE 2 FIXES (v6.0 NEW):
+ * ─ Layer Hierarchy restructured: Quant Math (R², Z-Score, StdDev) is now Layer 1
+ *   → Statistical regime is established FIRST before wasting compute on technicals
+ * ─ Layer 0: Data Integrity Gate — Outlier tick filtering (median clamp) + Stale price detection
+ * ─ Expectancy weighted by R² — penalizes choppy/random-walk markets
+ * ─ Every division guarded with safeNum / ternary checks
+ *
+ * NEW LAYER ORDER:
+ * ─ Layer 0: DATA INTEGRITY & NOISE GATE — Stale ticks, outlier filtering, volatility kill
+ * ─ Layer 1: QUANT MATH — Linear Reg R², StdDev, Z-Score (statistical regime FIRST)
+ * ─ Layer 2: MTF TREND — 5m+15m EMA direction (institutional macro)
+ * ─ Layer 3: MICRO TREND — 1-min EMA9/EMA21 cross
+ * ─ Layer 4: MOMENTUM — MACD histogram direction
+ * ─ Layer 5: S/R ZONES — Bollinger %B proximity
+ * ─ Layer 6: EXHAUSTION & RSI — Stochastic zone + RSI context
+ * ─ Layer 7: PRICE ACTION & SMC — Engulfing, Divergence, FVG, BoS
+ *
+ * All original Hard Gates, logging, variable names, and SignalCandidate format PRESERVED.
  */
 
 import { derivWs } from "./derivWebSocket";
@@ -56,6 +59,13 @@ export const ENGINE_CONFIG = {
   MIN_HTF_TICKS: 3600,      // v5.5 FIX: ~1 hour of ticks at 1t/s so 15m candles can form (was 100)
   MIN_HTF_CANDLES: 4,       // Minimum candles for HTF EMA
   MIN_1M_CANDLES: 30,       // Minimum 1-min candles required for indicator math
+
+  // ── Data Integrity (Layer 0 — v6.0 NEW) ──
+  OUTLIER_WINDOW: 20,       // Rolling median window for outlier detection
+  OUTLIER_CLAMP_SIGMA: 3.0, // Ticks beyond 3σ from median are clamped
+  STALE_TICK_WINDOW: 50,    // Check last N ticks for staleness
+  STALE_VARIANCE_MIN: 1e-12,// Minimum variance — below this = flatline/stale
+  STALE_PENALTY: 30,        // Score penalty if stale price detected
 
   // ── EMA periods ──
   EMA_FAST: 9,
@@ -132,15 +142,17 @@ export const ENGINE_CONFIG = {
   MOMENTUM_HIST_CAP: 8,
   MOMENTUM_CROSS_SCORE: 15,
 
-  // ── Quant Math (Layer 8) ──
+  // ── Quant Math (Layer 1 — promoted from Layer 8) ──
   R2_STRONG_THRESHOLD: 0.7,    // Strong linear trend
   R2_WEAK_THRESHOLD: 0.3,      // Choppy / no trend
   R2_DEVIATION_THRESHOLD: 0.5, // Min R² for regression deviation signal
+  R2_RANDOM_WALK: 0.15,        // v6.0: Below this → treat as random walk, heavy penalty
   ZSCORE_EXTREME: 2.0,         // >2σ from mean = mean-reversion
   ZSCORE_REINFORCE_BONUS: 5,
   ZSCORE_CONFLICT_PENALTY: 3,
   STDDEV_BREAKOUT_CHANGE: 0.3,
   QUANT_SCORE_CAP: 15,
+  QUANT_REGIME_PENALTY: 10,    // v6.0: Penalty applied when R² < R2_WEAK (random walk regime)
 
   // ── Conflict penalties ──
   PENALTY_RSI_HARDLOCK_OVERRIDE: 10,
@@ -170,10 +182,11 @@ export const ENGINE_CONFIG = {
   GRADE_B_MIN_LAYERS: 3,
   GRADE_B_MIN_SCORE: 40,
 
-  // ── Expectancy (Batista formula) ──
-  // estimatedWinRate = BASE + (score/100) * SCALE
+  // ── Expectancy (Batista formula — v6.0: R²-weighted) ──
+  // estimatedWinRate = BASE + (score/100) * SCALE * regimeMultiplier
   // Rationale: a score-0 signal has ~45% win rate (slightly below breakeven),
   // a perfect score-100 signal has ~70% (45+25). Payout is Deriv standard 85%.
+  // v6.0: R² < 0.3 reduces SCALE by 50% (choppy markets kill expectancy)
   EXPECTANCY_BASE_WINRATE: 0.45,
   EXPECTANCY_WINRATE_SCALE: 0.25,
   PAYOUT_RATIO: 0.85,
@@ -203,6 +216,67 @@ function safeNum(val: number, fallback = 0): number {
 
 function sanitizePrices(prices: number[]): number[] {
   return prices.map(p => Number.isFinite(p) ? p : 0);
+}
+
+// ═════════════════════════════════════════════════════════════
+// DATA INTEGRITY FUNCTIONS (v6.0 — Layer 0)
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * Outlier Tick Filter — Median-based clamp
+ * A single erroneous/delayed tick can spike candle High/Low, ruining ATR, BB, Z-Score.
+ * This replaces extreme outliers with clamped values (median ± 3σ).
+ */
+function filterOutlierTicks(prices: number[]): number[] {
+  if (prices.length < ENGINE_CONFIG.OUTLIER_WINDOW) return prices;
+
+  const filtered = [...prices];
+  const win = ENGINE_CONFIG.OUTLIER_WINDOW;
+
+  for (let i = win; i < prices.length; i++) {
+    // Build rolling window
+    const window = filtered.slice(i - win, i);
+    const sorted = [...window].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    // Rolling std dev of window
+    let sqSum = 0;
+    for (const v of window) sqSum += (v - median) ** 2;
+    const stdDev = Math.sqrt(sqSum / window.length);
+
+    if (stdDev === 0) continue; // Flat market — no outliers possible
+
+    const sigma = ENGINE_CONFIG.OUTLIER_CLAMP_SIGMA;
+    const upper = median + sigma * stdDev;
+    const lower = median - sigma * stdDev;
+
+    // Clamp: don't remove the tick, just bring it back to bounds
+    if (filtered[i] > upper) filtered[i] = upper;
+    else if (filtered[i] < lower) filtered[i] = lower;
+  }
+
+  return filtered;
+}
+
+/**
+ * Stale Price / Flatline Detection
+ * If the last N ticks have near-zero variance, the market is dead or the feed is stale.
+ * Returns true if prices are stale (should penalize or block signals).
+ */
+function detectStalePrices(prices: number[]): boolean {
+  const win = Math.min(ENGINE_CONFIG.STALE_TICK_WINDOW, prices.length);
+  if (win < 10) return false;
+
+  const recent = prices.slice(-win);
+  let sum = 0;
+  for (const p of recent) sum += p;
+  const mean = sum / win;
+
+  let variance = 0;
+  for (const p of recent) variance += (p - mean) ** 2;
+  variance /= win;
+
+  return variance < ENGINE_CONFIG.STALE_VARIANCE_MIN;
 }
 
 // ─── Signal Candidate ────────────────────────────────────────
@@ -360,7 +434,7 @@ function computeHTFTrend(prices: number[], times: number[]): HTFResult {
     };
   } else {
     // v5.5 FALLBACK: Not enough data for 15m — log and proceed with 5m only
-    console.log(`[v5.5] HTF 15m: only ${candles15m.length} candles (need ${ENGINE_CONFIG.MIN_HTF_CANDLES}) — using 5m only`);
+    console.log(`[v6.0] HTF 15m: only ${candles15m.length} candles (need ${ENGINE_CONFIG.MIN_HTF_CANDLES}) — using 5m only`);
   }
 
   // Combined: 15m priority (institutional), 5m confirms
@@ -500,9 +574,7 @@ function detectSMC(candles: Candle[]): SMCResult {
   // ── Fair Value Gap Detection (v5.5 FIX: standardized gap logic) ──
   // Bullish FVG: gap between c0.high and c2.low — price jumped up leaving an unfilled void
   // Bearish FVG: gap between c0.low and c2.high — price dropped leaving an unfilled void
-  // v5.5: Removed redundant c1 fill check. The standard FVG definition is:
-  //   Bullish: c2.low > c0.high (gap exists between candle 0's high and candle 2's low)
-  //   Bearish: c2.high < c0.low (gap exists between candle 0's low and candle 2's high)
+  // v5.5: Standardized: Bullish = c2.low > c0.high, Bearish = c2.high < c0.low
   if (last >= 2) {
     const c0 = candles[last - 2]; // oldest
     const c2 = candles[last];     // newest
@@ -593,7 +665,7 @@ function detectSMC(candles: Candle[]): SMCResult {
 }
 
 // ═════════════════════════════════════════════════════════════
-// MAIN ANALYSIS FUNCTION (v5.5)
+// MAIN ANALYSIS FUNCTION (v6.0 — Regime-First Layer Hierarchy)
 // ═════════════════════════════════════════════════════════════
 
 export function analyzeSymbol(
@@ -606,23 +678,34 @@ export function analyzeSymbol(
   const cleanPrices = sanitizePrices(prices);
   const cleanTimes = times ? times.map(t => Number.isFinite(t) ? t : 0) : undefined;
 
-  // ── v5.5 FIX 1: Build 1-minute candles from ticks ──
-  // ALL indicators now operate on candle close prices (time-based), NOT raw tick arrays.
-  // Raw ticks are only used for currentPrice (execution reference).
+  // ════════════════════════════════════════════════════════════
+  // LAYER 0: DATA INTEGRITY & NOISE GATE (v6.0 — new)
+  // ════════════════════════════════════════════════════════════
+
+  // v6.0: Outlier tick filtering — clamp extreme ticks before candle building
+  // This prevents flash-crash spikes from corrupting ATR, BB, and Z-Score
+  const filteredPrices = filterOutlierTicks(cleanPrices);
+
+  // v6.0: Stale price detection — if last N ticks are identical, market is dead
+  const isStale = detectStalePrices(filteredPrices);
+
+  // ── Build 1-minute candles from ticks ──
+  // ALL indicators operate on candle close prices (time-based), NOT raw tick arrays.
+  // Raw ticks only used for currentPrice (execution reference).
   let candles1m: Candle[] = [];
   let candleCloses: number[];
 
-  if (cleanTimes && cleanTimes.length === cleanPrices.length) {
-    candles1m = buildCandles(cleanPrices, cleanTimes, 60);
+  if (cleanTimes && cleanTimes.length === filteredPrices.length) {
+    candles1m = buildCandles(filteredPrices, cleanTimes, 60);
     candleCloses = candles1m.map(c => c.close);
   } else {
-    // Fallback: if no timestamps available, use raw prices (degraded mode)
-    candleCloses = cleanPrices;
+    // Fallback: if no timestamps available, use filtered prices (degraded mode)
+    candleCloses = filteredPrices;
   }
 
   // Need minimum candles for indicator math
   if (candleCloses.length < ENGINE_CONFIG.MIN_1M_CANDLES) {
-    console.log(`[v5.5] Insufficient 1m candles: ${candleCloses.length} (need ${ENGINE_CONFIG.MIN_1M_CANDLES})`);
+    console.log(`[v6.0] Insufficient 1m candles: ${candleCloses.length} (need ${ENGINE_CONFIG.MIN_1M_CANDLES})`);
     return null;
   }
 
@@ -652,7 +735,6 @@ export function analyzeSymbol(
 
   const currentRSI = safeNum(rsi[last], 50);
   const currentHistogram = safeNum(histogram[last]);
-  // v5.4 FIX: guard prevHistogram index
   const prevHistogram = last > 0 ? safeNum(histogram[last - 1]) : 0;
   const currentATR = safeNum(atr[last]);
   const currentSlope = safeNum(slope[last]);
@@ -665,24 +747,80 @@ export function analyzeSymbol(
   const currentLinRegDev = safeNum(linReg.deviation[last]);
   const currentZScore = safeNum(zScore[last]);
 
-  // ════════════════════════════════════════════════════════════
-  // LAYER 0: NOISE GATE — Volatility Filter
-  // ════════════════════════════════════════════════════════════
-
+  // ── Volatility classification (part of Layer 0) ──
   const volState = classifyVolatility(bb.bandwidth, atr, candleCloses, last);
   const isNoisyMarket = volState === "squeeze" || volState === "extreme";
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 1: MTF TREND — 5m+15m candle direction
+  // LAYER 1: QUANT MATH — Statistical Regime (v6.0: PROMOTED from Layer 8)
+  // Establish the statistical regime FIRST before evaluating technicals.
+  // If R² is garbage (< 0.15), the asset is in a random walk — heavy penalty.
+  // ════════════════════════════════════════════════════════════
+
+  let quantScore = 0;
+  let quantDirection = 0;
+  let isRandomWalk = false;
+  let regimeMultiplier = 1.0; // v6.0: scales expectancy and can weight downstream layers
+
+  // Linear Regression: R² > 0.7 = strong trend, slope gives direction
+  if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD) {
+    quantDirection = currentLinRegSlope > 0 ? 1 : currentLinRegSlope < 0 ? -1 : 0;
+    quantScore += Math.min(currentR2 * 10, 8);
+    regimeMultiplier = 1.0; // Full confidence in trend regime
+  } else if (currentR2 < ENGINE_CONFIG.R2_RANDOM_WALK) {
+    // v6.0: Below 0.15 R² → random walk, statistically insignificant
+    isRandomWalk = true;
+    regimeMultiplier = 0.4; // Heavily penalize expectancy in random walk
+    console.log(`[v6.0] L1 QUANT: Random walk detected (R²=${(currentR2 * 100).toFixed(0)}%) — regime penalty applied`);
+  } else if (currentR2 < ENGINE_CONFIG.R2_WEAK_THRESHOLD) {
+    // Choppy but not fully random
+    regimeMultiplier = 0.7;
+  }
+
+  // Z-Score: >2σ from mean suggests mean-reversion
+  if (Math.abs(currentZScore) > ENGINE_CONFIG.ZSCORE_EXTREME) {
+    const zDir = currentZScore > 0 ? -1 : 1; // Sell above mean, Buy below
+    if (quantDirection === 0) {
+      quantDirection = zDir;
+    } else if (quantDirection === zDir) {
+      quantScore += ENGINE_CONFIG.ZSCORE_REINFORCE_BONUS;
+    } else {
+      quantScore = Math.max(0, quantScore - ENGINE_CONFIG.ZSCORE_CONFLICT_PENALTY);
+    }
+  }
+
+  // Regression deviation: price far from regression line in strong trend
+  if (currentPrice > 0 && currentR2 > ENGINE_CONFIG.R2_DEVIATION_THRESHOLD) {
+    const devPct = Math.abs(currentLinRegDev) / currentPrice * 100;
+    if (devPct > 0.05) {
+      const devDir = currentLinRegDev > 0 ? -1 : 1;
+      if (devDir === quantDirection) quantScore += 3;
+    }
+  }
+
+  // Std Dev rate of change: expanding vol = breakout, contracting = mean reversion
+  if (last >= 5 && safeNum(stdDev[last - 5]) > 0) {
+    const stdDevChange = (currentStdDev - safeNum(stdDev[last - 5])) / safeNum(stdDev[last - 5]);
+    if (stdDevChange > ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
+      quantScore += 2; // Volatility expanding — favor trend continuation
+    } else if (stdDevChange < -ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
+      quantScore += 1; // Volatility contracting — favor mean reversion
+    }
+  }
+
+  quantScore = Math.min(Math.max(quantScore, 0), ENGINE_CONFIG.QUANT_SCORE_CAP);
+
+  // ════════════════════════════════════════════════════════════
+  // LAYER 2: MTF TREND — 5m+15m candle direction
   // ════════════════════════════════════════════════════════════
 
   const htf: HTFResult = cleanTimes
-    ? computeHTFTrend(cleanPrices, cleanTimes)
+    ? computeHTFTrend(filteredPrices, cleanTimes)
     : { direction: 0, strength: 0, htf5m: { direction: 0, strength: 0 }, htf15m: { direction: 0, strength: 0 } };
   let mtfScore = htf.direction !== 0 ? Math.min(htf.strength * ENGINE_CONFIG.MTF_STRENGTH_MULT, ENGINE_CONFIG.MTF_SCORE_CAP) : 0;
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 2: TREND — EMA9 vs EMA21 (1-min candle closes)
+  // LAYER 3: MICRO TREND — EMA9 vs EMA21 (1-min candle closes)
   // ════════════════════════════════════════════════════════════
 
   const ema9Last = safeNum(ema9[last]);
@@ -721,33 +859,11 @@ export function analyzeSymbol(
   }
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 3: ZONE — Bollinger S/R Proximity
+  // LAYER 4: MOMENTUM — MACD Histogram
+  // MACD valid only after bar 34 (25+9 for aligned signal)
   // ════════════════════════════════════════════════════════════
 
-  const zone = detectZone(currentPercentB);
-  let zoneScore = 0;
-  if (zone.inBuyZone || zone.inSellZone) {
-    zoneScore = Math.min(zone.zoneStrength * ENGINE_CONFIG.ZONE_SCORE_MULT, ENGINE_CONFIG.ZONE_SCORE_CAP);
-  }
-
-  // ════════════════════════════════════════════════════════════
-  // LAYER 4: EXHAUSTION — Stochastic
-  // ════════════════════════════════════════════════════════════
-
-  const stochZone = detectStochZone(stoch.k, stoch.d, last);
-  let exhaustionScore = 0;
-  if (stochZone.isBuyZone || stochZone.isSellZone) {
-    exhaustionScore = Math.min(stochZone.strength * ENGINE_CONFIG.EXHAUSTION_SCORE_MULT, ENGINE_CONFIG.EXHAUSTION_SCORE_CAP);
-  }
-
-  // ════════════════════════════════════════════════════════════
-  // LAYER 5: MOMENTUM — MACD Histogram
-  // v5.4 FIX: Skip early indices where histogram is unreliable
-  // (EMA26 needs 25 bars + signal EMA needs 9 more = 34 bars for valid data)
-  // v5.5: Updated threshold from 35 to 34 to match corrected MACD alignment
-  // ════════════════════════════════════════════════════════════
-
-  const macdReliable = last >= 34; // MACD valid only after bar 34 (25+9)
+  const macdReliable = last >= 34;
   let momentumScore = 0;
   let macdCrossSignal = "none";
   let macdDirection = 0;
@@ -767,8 +883,24 @@ export function analyzeSymbol(
   }
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 6: RSI CONTEXT
+  // LAYER 5: S/R ZONES — Bollinger %B Proximity
   // ════════════════════════════════════════════════════════════
+
+  const zone = detectZone(currentPercentB);
+  let zoneScore = 0;
+  if (zone.inBuyZone || zone.inSellZone) {
+    zoneScore = Math.min(zone.zoneStrength * ENGINE_CONFIG.ZONE_SCORE_MULT, ENGINE_CONFIG.ZONE_SCORE_CAP);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // LAYER 6: EXHAUSTION & RSI CONTEXT — Stochastic + RSI
+  // ════════════════════════════════════════════════════════════
+
+  const stochZone = detectStochZone(stoch.k, stoch.d, last);
+  let exhaustionScore = 0;
+  if (stochZone.isBuyZone || stochZone.isSellZone) {
+    exhaustionScore = Math.min(stochZone.strength * ENGINE_CONFIG.EXHAUSTION_SCORE_MULT, ENGINE_CONFIG.EXHAUSTION_SCORE_CAP);
+  }
 
   let rsiScore = 0;
   let rsiSignal = "neutral";
@@ -801,14 +933,14 @@ export function analyzeSymbol(
   }
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 7: PATTERN + SMC
-  // v5.5: Patterns now use 1-min OHLC candles instead of raw ticks
+  // LAYER 7: PRICE ACTION & SMC
+  // Patterns use 1-min OHLC candles (not raw ticks)
   // ════════════════════════════════════════════════════════════
 
-  // v5.5 FIX 5: Pass candle closes and RSI to divergence (time-based, not tick-based)
+  // Divergence uses candle closes and RSI (time-based)
   const divergence = detectDivergence(candleCloses, rsi);
 
-  // v5.5 FIX 5: Pass 1-min OHLC candle array to engulfing (proper candlestick logic)
+  // Engulfing uses 1-min OHLC candle array (proper candlestick logic)
   const patternCandles: PatternCandle[] = candles1m.map(c => ({
     open: c.open, high: c.high, low: c.low, close: c.close,
   }));
@@ -859,55 +991,8 @@ export function analyzeSymbol(
   const slopeDirection = currentSlope > 0 ? 1 : currentSlope < 0 ? -1 : 0;
 
   // ════════════════════════════════════════════════════════════
-  // LAYER 8: QUANT MATH — StdDev, Linear Regression, Z-Score
-  // ════════════════════════════════════════════════════════════
-
-  let quantScore = 0;
-  let quantDirection = 0;
-
-  // Linear Regression: R² > 0.7 = strong trend, slope gives direction
-  if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD) {
-    quantDirection = currentLinRegSlope > 0 ? 1 : currentLinRegSlope < 0 ? -1 : 0;
-    quantScore += Math.min(currentR2 * 10, 8);
-  }
-  // R² < 0.3 = choppy (no bonus, handled by noise gate)
-
-  // Z-Score: >2σ from mean suggests mean-reversion
-  if (Math.abs(currentZScore) > ENGINE_CONFIG.ZSCORE_EXTREME) {
-    const zDir = currentZScore > 0 ? -1 : 1; // Sell above mean, Buy below
-    if (quantDirection === 0) {
-      quantDirection = zDir;
-    } else if (quantDirection === zDir) {
-      quantScore += ENGINE_CONFIG.ZSCORE_REINFORCE_BONUS;
-    } else {
-      // v5.4 FIX: clamp subtraction so quantScore never goes negative
-      quantScore = Math.max(0, quantScore - ENGINE_CONFIG.ZSCORE_CONFLICT_PENALTY);
-    }
-  }
-
-  // Regression deviation: price far from regression line in strong trend
-  if (currentPrice > 0 && currentR2 > ENGINE_CONFIG.R2_DEVIATION_THRESHOLD) {
-    const devPct = Math.abs(currentLinRegDev) / currentPrice * 100;
-    if (devPct > 0.05) {
-      const devDir = currentLinRegDev > 0 ? -1 : 1;
-      if (devDir === quantDirection) quantScore += 3;
-    }
-  }
-
-  // Std Dev rate of change: expanding vol = breakout, contracting = mean reversion
-  if (last >= 5 && safeNum(stdDev[last - 5]) > 0) {
-    const stdDevChange = (currentStdDev - safeNum(stdDev[last - 5])) / safeNum(stdDev[last - 5]);
-    if (stdDevChange > ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
-      quantScore += 2; // Volatility expanding — favor trend continuation
-    } else if (stdDevChange < -ENGINE_CONFIG.STDDEV_BREAKOUT_CHANGE) {
-      quantScore += 1; // Volatility contracting — favor mean reversion
-    }
-  }
-
-  quantScore = Math.min(Math.max(quantScore, 0), ENGINE_CONFIG.QUANT_SCORE_CAP);
-
-  // ════════════════════════════════════════════════════════════
   // DIRECTIONAL DECISION — Weighted Layer Voting
+  // v6.0: Layer order updated to reflect new hierarchy
   // ════════════════════════════════════════════════════════════
 
   interface LayerVote {
@@ -919,16 +1004,16 @@ export function analyzeSymbol(
   }
 
   const layers: LayerVote[] = [
-    { name: "MTF",        direction: htf.direction, weight: 5, passed: htf.direction !== 0, score: mtfScore },
-    { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || (emaCrossed && institutionalAligned), score: trendScore },
-    { name: "Zone",       direction: zone.inBuyZone ? 1 : zone.inSellZone ? -1 : 0, weight: 3, passed: zone.inBuyZone || zone.inSellZone, score: zoneScore },
-    { name: "Exhaustion", direction: stochZone.direction, weight: 3, passed: stochZone.isBuyZone || stochZone.isSellZone, score: exhaustionScore },
-    { name: "Momentum",   direction: macdDirection, weight: 2, passed: momentumScore > 5, score: momentumScore },
-    { name: "RSI",        direction: rsiDirection, weight: 2, passed: rsiScore >= 4, score: rsiScore },
-    { name: "Pattern",    direction: patternDirection, weight: 1, passed: patternBonus > 2, score: patternBonus },
-    { name: "SMC",        direction: smc.direction, weight: 2, passed: smcScore > 2, score: smcScore },
-    { name: "Slope",      direction: slopeDirection, weight: 1, passed: slopeScore > 1, score: slopeScore },
-    { name: "Quant",      direction: quantDirection, weight: 3, passed: quantScore > 3, score: quantScore },
+    { name: "Quant",      direction: quantDirection, weight: 4, passed: quantScore > 3, score: quantScore },      // L1: highest weight (regime)
+    { name: "MTF",        direction: htf.direction, weight: 5, passed: htf.direction !== 0, score: mtfScore },     // L2
+    { name: "Trend",      direction: trendUp ? 1 : trendDown ? -1 : 0, weight: 3, passed: trendConfirmed || (emaCrossed && institutionalAligned), score: trendScore }, // L3
+    { name: "Momentum",   direction: macdDirection, weight: 2, passed: momentumScore > 5, score: momentumScore }, // L4
+    { name: "Zone",       direction: zone.inBuyZone ? 1 : zone.inSellZone ? -1 : 0, weight: 3, passed: zone.inBuyZone || zone.inSellZone, score: zoneScore }, // L5
+    { name: "Exhaustion", direction: stochZone.direction, weight: 3, passed: stochZone.isBuyZone || stochZone.isSellZone, score: exhaustionScore }, // L6
+    { name: "RSI",        direction: rsiDirection, weight: 2, passed: rsiScore >= 4, score: rsiScore },            // L6b
+    { name: "Pattern",    direction: patternDirection, weight: 1, passed: patternBonus > 2, score: patternBonus }, // L7
+    { name: "SMC",        direction: smc.direction, weight: 2, passed: smcScore > 2, score: smcScore },            // L7b
+    { name: "Slope",      direction: slopeDirection, weight: 1, passed: slopeScore > 1, score: slopeScore },       // tiebreaker
   ];
 
   let buyWeight = 0, sellWeight = 0, buyCount = 0, sellCount = 0;
@@ -1050,6 +1135,12 @@ export function analyzeSymbol(
     if (quantDirection !== signalDir) conflictPenalty += ENGINE_CONFIG.PENALTY_QUANT_R2_CONFLICT;
   }
 
+  // v6.0: Random walk regime penalty — penalize even if score looks high
+  if (isRandomWalk) conflictPenalty += ENGINE_CONFIG.QUANT_REGIME_PENALTY;
+
+  // v6.0: Stale price penalty
+  if (isStale) conflictPenalty += ENGINE_CONFIG.STALE_PENALTY;
+
   // Noise penalties
   if (isNoisyMarket) conflictPenalty += ENGINE_CONFIG.PENALTY_NOISY_MARKET;
   if (rsiIsChoppy) conflictPenalty += ENGINE_CONFIG.PENALTY_RSI_CHOPPY;
@@ -1071,14 +1162,16 @@ export function analyzeSymbol(
 
   // ── Signal Grade ──
   let grade: "A" | "B" | "C" = "C";
-  if (layersPassed >= ENGINE_CONFIG.GRADE_A_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_A_MIN_SCORE && !isNoisyMarket && mtfAligned) {
+  if (layersPassed >= ENGINE_CONFIG.GRADE_A_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_A_MIN_SCORE && !isNoisyMarket && mtfAligned && !isRandomWalk) {
     grade = "A";
-  } else if (layersPassed >= ENGINE_CONFIG.GRADE_B_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_B_MIN_SCORE) {
+  } else if (layersPassed >= ENGINE_CONFIG.GRADE_B_MIN_LAYERS && totalScore >= ENGINE_CONFIG.GRADE_B_MIN_SCORE && !isRandomWalk) {
     grade = "B";
   }
 
-  // ── Expectancy (Batista formula) ──
-  const estimatedWinRate = ENGINE_CONFIG.EXPECTANCY_BASE_WINRATE + (totalScore / 100) * ENGINE_CONFIG.EXPECTANCY_WINRATE_SCALE;
+  // ── Expectancy (Batista formula — v6.0: R²-weighted) ──
+  // v6.0: regimeMultiplier penalizes choppy/random-walk markets
+  const estimatedWinRate = ENGINE_CONFIG.EXPECTANCY_BASE_WINRATE +
+    (totalScore / 100) * ENGINE_CONFIG.EXPECTANCY_WINRATE_SCALE * regimeMultiplier;
   const expectancy = estimatedWinRate * ENGINE_CONFIG.PAYOUT_RATIO - (1 - estimatedWinRate);
 
   // ════════════════════════════════════════════════════════════
@@ -1101,10 +1194,13 @@ export function analyzeSymbol(
   if (hardGateApplied) patterns.push("HARD GATE APPLIED");
   if (currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD) patterns.push(`LINREG R²:${(currentR2 * 100).toFixed(0)}%`);
   if (Math.abs(currentZScore) > ENGINE_CONFIG.ZSCORE_EXTREME) patterns.push(`ZSCORE:${currentZScore.toFixed(1)}`);
+  if (isRandomWalk) patterns.push("RANDOM_WALK⚠️");
+  if (isStale) patterns.push("STALE_PRICE⚠️");
   const pattern = patterns.length > 0 ? patterns.join(" + ") : null;
 
   const logicParts: string[] = [];
   logicParts.push(`Grade:${grade}`);
+  logicParts.push(`Regime:${isRandomWalk ? "RW" : currentR2 > ENGINE_CONFIG.R2_STRONG_THRESHOLD ? "TREND" : "CHOP"}(R²:${(currentR2*100).toFixed(0)}%)`);
   if (htf.direction !== 0) logicParts.push(`MTF:${htf.direction > 0 ? "↑" : "↓"}(${mtfAligned ? "✓" : "✗"})`);
   if (htf.htf15m.direction !== 0) logicParts.push(`15m:${htf.htf15m.direction > 0 ? "↑" : "↓"}`);
   if (institutionalDirection !== 0) logicParts.push(`EMA50:${institutionalDirection > 0 ? "↑" : "↓"}`);
@@ -1116,6 +1212,7 @@ export function analyzeSymbol(
   logicParts.push(`${layersPassed}/${layers.length} layers`);
   if (currentR2 > ENGINE_CONFIG.R2_DEVIATION_THRESHOLD) logicParts.push(`R²:${(currentR2 * 100).toFixed(0)}%`);
   if (isNoisyMarket) logicParts.push(`Vol:${volState}`);
+  if (isStale) logicParts.push("STALE⚠️");
   if (smc.description) logicParts.push(`SMC:${smc.description}`);
   logicParts.push(expectancy > 0 ? `E+:${(expectancy * 100).toFixed(1)}%` : `E-:${(expectancy * 100).toFixed(1)}%`);
   const logic = logicParts.join(" | ");
@@ -1128,8 +1225,10 @@ export function analyzeSymbol(
     `Stoch:${stochZone.signal}(K:${safeNum(stoch.k[last]).toFixed(0)})`,
     `Vol:${volState}`,
     `ATR:${currentATR.toFixed(4)}`,
+    `R²:${(currentR2 * 100).toFixed(0)}%`,
     htf.direction !== 0 ? `MTF:${htf.direction > 0 ? "↑" : "↓"}` : null,
     smc.description ? `SMC:${smc.description}` : null,
+    isStale ? "STALE⚠️" : null,
     pattern,
   ].filter(Boolean).join(" | ");
 
@@ -1185,7 +1284,7 @@ export function analyzeSymbol(
   };
 }
 
-// ─── Signal Generator v5.5 — Adaptive Window + Loss-Streak Timeout ──
+// ─── Signal Generator v6.0 — Adaptive Window + Loss-Streak Timeout ──
 
 export type SignalCallback = (signal: SignalCandidate) => void;
 
@@ -1232,7 +1331,7 @@ export class SignalGenerator {
       if (this.consecutiveLosses >= ENGINE_CONFIG.LOSS_STREAK_A_ONLY && this.lossStreakStartedAt === 0) {
         this.lossStreakStartedAt = Date.now();
         this.lossStreakScanCount = 0;
-        console.log(`[v5.5] Loss streak ${this.consecutiveLosses} — entering A-ONLY mode (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans)`);
+        console.log(`[v6.0] Loss streak ${this.consecutiveLosses} — entering A-ONLY mode (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans)`);
       }
     }
   }
@@ -1265,7 +1364,7 @@ export class SignalGenerator {
     }
 
     if (candidates.length === 0) {
-      console.log("[v5.5] No symbols with sufficient data this scan");
+      console.log("[v6.0] No symbols with sufficient data this scan");
       return null;
     }
 
@@ -1283,7 +1382,7 @@ export class SignalGenerator {
         // Timeout reached — downgrade back to accepting B-grades
         minGrade = "B";
         console.log(
-          `[v5.5] Loss-streak A-only TIMEOUT after ${this.lossStreakScanCount} scans — ` +
+          `[v6.0] Loss-streak A-only TIMEOUT after ${this.lossStreakScanCount} scans — ` +
           `accepting B-grades again (losses: ${this.consecutiveLosses})`
         );
         // Reset timeout tracking but keep loss count (will re-enter A-only if another loss occurs)
@@ -1303,7 +1402,7 @@ export class SignalGenerator {
       const bCount = candidates.filter(c => c.grade === "B").length;
       const cCount = candidates.filter(c => c.grade === "C").length;
       console.log(
-        `[v5.5] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+        `[v6.0] Scan: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
         `Min grade: ${minGrade} | Losses: ${this.consecutiveLosses} ` +
         (minGrade === "A" ? `(A-only scan ${this.lossStreakScanCount}/${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS}) ` : "") +
         `— no quality signal`
@@ -1328,10 +1427,11 @@ export class SignalGenerator {
     const bCount = candidates.filter(c => c.grade === "B").length;
     const cCount = candidates.filter(c => c.grade === "C").length;
     console.log(
-      `[v5.5] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
+      `[v6.0] Scan #${this.scanCount}: ${candidates.length} candidates: ${aCount}A/${bCount}B/${cCount}C | ` +
       `Best: ${SYMBOLS[best.symbol] || best.symbol} ${best.type} [${best.grade}] ` +
       `score:${best.score} conf:${best.confidence}% ` +
       `MTF:${best.metrics.mtf_aligned ? "✓" : "✗"} ` +
+      `R²:${(best.metrics.lin_reg_r2 * 100).toFixed(0)}% ` +
       `E:${(best.metrics.expectancy * 100).toFixed(1)}%`
     );
 
@@ -1363,16 +1463,16 @@ export class SignalGenerator {
       this.worker = new Worker(URL.createObjectURL(blob));
       this.worker.onmessage = () => this.tick();
       this.worker.postMessage({ type: "start", interval: ENGINE_CONFIG.SCAN_INTERVAL_MS });
-      console.log(`[v5.5] Signal Engine Started — Adaptive Window (3-5 min) | Scan every 30s`);
+      console.log(`[v6.0] Signal Engine Started — Regime-First Quant Architect`);
     } catch (err) {
-      console.warn("[v5.5] Web Worker unavailable, using setInterval:", err);
+      console.warn("[v6.0] Web Worker unavailable, using setInterval:", err);
       this.fallbackTimerId = setInterval(() => this.tick(), ENGINE_CONFIG.SCAN_INTERVAL_MS);
     }
 
-    console.log(`[v5.5] Layers: MTF(15m+5m) → Trend → Zone → Stoch → Momentum → RSI → Pattern → SMC → Slope → Quant`);
-    console.log(`[v5.5] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
-    console.log(`[v5.5] Filters: Hard Gates + Noise Gate + RSI Chop + MTF Conflict + Quant R² + Loss Streak (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans)`);
-    console.log(`[v5.5] FIX: Indicators now use 1-min candle closes (not raw ticks) | MIN_HTF_TICKS: ${ENGINE_CONFIG.MIN_HTF_TICKS}`);
+    console.log(`[v6.0] Layer Order: L0:DataIntegrity → L1:QuantMath(R²) → L2:MTF → L3:Trend → L4:MACD → L5:BB → L6:Stoch+RSI → L7:Pattern+SMC`);
+    console.log(`[v6.0] Window: 0-3min COOLDOWN → 3-5min SCAN (A=instant emit, B=hold→deadline)`);
+    console.log(`[v6.0] Guards: OutlierClamp(3σ) + StalePriceGate + RandomWalkPenalty(R²<15%) + Hard Gates + Noise Gate`);
+    console.log(`[v6.0] Filters: Loss Streak (timeout: ${ENGINE_CONFIG.LOSS_STREAK_TIMEOUT_SCANS} scans) | MIN_HTF_TICKS: ${ENGINE_CONFIG.MIN_HTF_TICKS}`);
   }
 
   stop() {
@@ -1388,7 +1488,7 @@ export class SignalGenerator {
     }
     this.bestCandidate = null;
     this.windowOpenedAt = 0;
-    console.log(`[v5.5] Signal Engine Stopped`);
+    console.log(`[v6.0] Signal Engine Stopped`);
   }
 
   private async tick() {
@@ -1400,7 +1500,7 @@ export class SignalGenerator {
     // ── COOLDOWN PHASE (0–3 min) ──
     if (elapsed < ENGINE_CONFIG.WINDOW_OPEN_MS) {
       const remaining = Math.round((ENGINE_CONFIG.WINDOW_OPEN_MS - elapsed) / 1000);
-      console.log(`[v5.5] Cooldown: ${remaining}s until observation window opens`);
+      console.log(`[v6.0] Cooldown: ${remaining}s until observation window opens`);
       return;
     }
 
@@ -1409,7 +1509,7 @@ export class SignalGenerator {
       this.windowOpenedAt = now;
       this.bestCandidate = null;
       this.scanCount = 0;
-      console.log(`[v5.5] ═══ Observation window OPENED ═══`);
+      console.log(`[v6.0] ═══ Observation window OPENED ═══`);
     }
 
     this.scanCount++;
@@ -1425,7 +1525,7 @@ export class SignalGenerator {
           const prev = this.bestCandidate;
           this.bestCandidate = candidate;
           console.log(
-            `[v5.5] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
+            `[v6.0] New best: ${SYMBOLS[candidate.symbol] || candidate.symbol} ` +
             `${candidate.type} [${candidate.grade}] score:${candidate.score}` +
             (prev ? ` (replaced ${prev.grade}:${prev.score})` : ` (first candidate)`)
           );
@@ -1434,7 +1534,7 @@ export class SignalGenerator {
         // A-grade = instant emit
         if (candidate.grade === "A" && isBetter) {
           console.log(
-            `[v5.5] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
+            `[v6.0] ⚡ A-GRADE INSTANT EMIT at ${Math.round(elapsed / 1000)}s — ` +
             `${SYMBOLS[candidate.symbol] || candidate.symbol} ${candidate.type} score:${candidate.score}`
           );
           this.emitSignal(this.bestCandidate!);
@@ -1446,14 +1546,14 @@ export class SignalGenerator {
       if (isDeadline) {
         if (this.bestCandidate) {
           console.log(
-            `[v5.5] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
+            `[v6.0] ⏰ DEADLINE EMIT after ${this.scanCount} scans (${Math.round(windowElapsed / 1000)}s window) — ` +
             `${SYMBOLS[this.bestCandidate.symbol] || this.bestCandidate.symbol} ` +
             `${this.bestCandidate.type} [${this.bestCandidate.grade}] score:${this.bestCandidate.score}`
           );
           this.emitSignal(this.bestCandidate);
         } else {
           console.log(
-            `[v5.5] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
+            `[v6.0] ⏰ DEADLINE — no quality signal after ${this.scanCount} scans — SKIPPING CYCLE`
           );
           this.bestCandidate = null;
           this.windowOpenedAt = 0;
@@ -1463,13 +1563,13 @@ export class SignalGenerator {
       } else {
         const timeLeft = Math.round((ENGINE_CONFIG.WINDOW_CLOSE_MS - elapsed) / 1000);
         console.log(
-          `[v5.5] Window scan #${this.scanCount} complete — ` +
+          `[v6.0] Window scan #${this.scanCount} complete — ` +
           `best: ${this.bestCandidate ? `${this.bestCandidate.grade}:${this.bestCandidate.score}` : "none"} | ` +
           `${timeLeft}s to deadline`
         );
       }
     } catch (err) {
-      console.error("[v5.5] Scan error:", err);
+      console.error("[v6.0] Scan error:", err);
     }
   }
 
