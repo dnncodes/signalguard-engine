@@ -1,5 +1,11 @@
 /**
- * Price Pattern Detection Module v2.0
+ * Price Pattern Detection Module v2.1 — "Hardened" Edition
+ *
+ * v2.1 CHANGES:
+ * ─ All array access guarded against out-of-bounds
+ * ─ NaN-safe comparisons on swing point detection
+ * ─ Zero-body doji guard on engulfing
+ * ─ Strength clamped 0-100
  *
  * v2.0 FIX: Accepts proper 1-minute OHLC candle arrays instead of raw tick chunks.
  * This eliminates the "temporal distortion" caused by arbitrary tick-windowing.
@@ -8,6 +14,12 @@
  * - Engulfing (bullish / bearish) — using real candlestick OHLC
  * - Price-RSI divergence (bullish / bearish) — using candle close prices
  */
+
+// ─── Safe math utility ──────────────────────────────────────
+
+function safe(val: number, fallback = 0): number {
+  return Number.isFinite(val) ? val : fallback;
+}
 
 // ─── Candle interface (shared with signalEngine) ─────────────
 
@@ -37,8 +49,8 @@ function findSwingPoints(data: number[], lookback = 5): { highs: number[]; lows:
     let isHigh = true;
     let isLow = true;
     for (let j = 1; j <= lookback; j++) {
-      if (data[i] <= data[i - j] || data[i] <= data[i + j]) isHigh = false;
-      if (data[i] >= data[i - j] || data[i] >= data[i + j]) isLow = false;
+      if (safe(data[i]) <= safe(data[i - j]) || safe(data[i]) <= safe(data[i + j])) isHigh = false;
+      if (safe(data[i]) >= safe(data[i - j]) || safe(data[i]) >= safe(data[i + j])) isLow = false;
     }
     if (isHigh) highs.push(i);
     if (isLow) lows.push(i);
@@ -54,7 +66,7 @@ function findSwingPoints(data: number[], lookback = 5): { highs: number[]; lows:
  * @param rsi    - RSI array computed from the same candle closes
  */
 export function detectDivergence(closes: number[], rsi: number[]): Divergence | null {
-  if (closes.length < 30) return null;
+  if (closes.length < 30 || rsi.length < 30) return null;
 
   const recentCloses = closes.slice(-50);
   const recentRSI = rsi.slice(-50);
@@ -68,10 +80,10 @@ export function detectDivergence(closes: number[], rsi: number[]): Divergence | 
     const [prevRSILow, currRSILow] = rsiSwings.lows.slice(-2);
 
     if (
-      recentCloses[currPriceLow] < recentCloses[prevPriceLow] &&
-      recentRSI[currRSILow] > recentRSI[prevRSILow]
+      safe(recentCloses[currPriceLow]) < safe(recentCloses[prevPriceLow]) &&
+      safe(recentRSI[currRSILow]) > safe(recentRSI[prevRSILow])
     ) {
-      const strength = Math.min(Math.abs(recentRSI[currRSILow] - recentRSI[prevRSILow]) * 2, 100);
+      const strength = Math.min(Math.max(Math.abs(safe(recentRSI[currRSILow]) - safe(recentRSI[prevRSILow])) * 2, 0), 100);
       return {
         type: "bullish",
         strength,
@@ -86,10 +98,10 @@ export function detectDivergence(closes: number[], rsi: number[]): Divergence | 
     const [prevRSIHigh, currRSIHigh] = rsiSwings.highs.slice(-2);
 
     if (
-      recentCloses[currPriceHigh] > recentCloses[prevPriceHigh] &&
-      recentRSI[currRSIHigh] < recentRSI[prevRSIHigh]
+      safe(recentCloses[currPriceHigh]) > safe(recentCloses[prevPriceHigh]) &&
+      safe(recentRSI[currRSIHigh]) < safe(recentRSI[prevRSIHigh])
     ) {
-      const strength = Math.min(Math.abs(recentRSI[prevRSIHigh] - recentRSI[currRSIHigh]) * 2, 100);
+      const strength = Math.min(Math.max(Math.abs(safe(recentRSI[prevRSIHigh]) - safe(recentRSI[currRSIHigh])) * 2, 0), 100);
       return {
         type: "bearish",
         strength,
@@ -122,8 +134,8 @@ export function detectEngulfing(candles: PatternCandle[]): EngulfingPattern | nu
   const prev = candles[candles.length - 2];
   const curr = candles[candles.length - 1];
 
-  const prevBody = Math.abs(prev.close - prev.open);
-  const currBody = Math.abs(curr.close - curr.open);
+  const prevBody = Math.abs(safe(prev.close) - safe(prev.open));
+  const currBody = Math.abs(safe(curr.close) - safe(curr.open));
 
   // Guard: zero-body candles (doji) cannot form engulfing
   if (prevBody === 0 || currBody === 0) return null;
